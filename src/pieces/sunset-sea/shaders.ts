@@ -62,7 +62,7 @@ float puffCloud(vec2 q, float cx, float baseY, float w, float h, float seed, flo
   }
   // flat, slightly wavering base
   d = max(d, (q.y - baseY) - 0.004 * gnoise(vec2(q.x * 40.0, seed)));
-  d += 0.006 * fbm(q * vec2(20.0, 45.0) + seed) + 0.0018 * gnoise(q * 160.0 + seed);
+  d += 0.009 * fbm(q * vec2(16.0, 30.0) + seed) + 0.004 * fbm(q * 60.0 + seed * 2.0) + 0.0015 * gnoise(q * 160.0 + seed);
   return d;
 }
 float wrapX(float x, float w) { float span = ASP + w * 1.2; return mod(x + w * 0.6, span) - w * 0.6; }
@@ -93,9 +93,10 @@ void main() {
     float g = granulate(pp, 0.7);
     float inSky = smoothstep(0.002, -0.002, sheet);
 
-    col = glaze(col, PEACH, inSky * g, (0.4 + 0.3 * wet) * keep);
-    col = glaze(col, ROSE, inSky * g, (1.0 - smoothstep(0.0, 0.55, ty)) * (0.7 + 0.5 * wet) * keep);
-    col = glaze(col, ORANGE, inSky * g, smoothstep(0.3, 0.8, ty) * (0.6 + 0.5 * bands) * keep);
+    col = glaze(col, PEACH, inSky * g, (0.55 + 0.3 * wet) * keep);
+    col = glaze(col, ROSE, inSky * g, (1.0 - smoothstep(0.0, 0.5, ty)) * (0.6 + 0.4 * wet) * keep);
+    col = glaze(col, MAUVE, inSky * g, (1.0 - smoothstep(0.0, 0.22, ty)) * 0.35 * (0.6 + wet) * keep);
+    col = glaze(col, ORANGE, inSky * g, smoothstep(0.25, 0.8, ty) * (0.7 + 0.5 * bands) * keep);
     col = glaze(col, CORAL, inSky * g, smoothstep(0.65, 1.0, ty) * (0.4 + 0.4 * bands) * keep);
 
     // hard-edged horizontal wash strokes of orange across the sky (the painter's second pass)
@@ -107,14 +108,15 @@ void main() {
     // high mauve clouds: two small cumulus drifting right
     {
       float ca = wrapX(0.36 + t * 0.0045, 0.22);
-      float da = puffCloud(q, ca, 0.062, 0.2, 0.03, 1.0, 1.0);
+      float da = puffCloud(q, ca, 0.075, 0.26, 0.04, 1.0, 0.9);
       float cb = wrapX(0.05 + t * 0.0038, 0.16);
-      float db = puffCloud(q, cb, 0.048, 0.15, 0.022, 4.0, 1.0);
+      float db = puffCloud(q, cb, 0.06, 0.2, 0.03, 4.0, 0.9);
       float dc = min(da, db);
-      float topSoft = smoothstep(0.05, 0.02, uv.y);
-      col = wash(col, mix(MAUVE, MAGENTA, 0.25 + 0.35 * wet), dc, mix(0.001, 0.006, topSoft), 0.9, 1.7, 0.004, 1.2, uv);
+      float topSoft = smoothstep(0.065, 0.035, uv.y);
+      float bleedC = smoothstep(-0.1, 0.3, gnoise(q * vec2(14.0, 30.0) + 3.0));
+      col = wash(col, mix(MAUVE, MAGENTA, 0.35 + 0.35 * wet), dc, mix(0.001, 0.009, max(topSoft, bleedC)), 0.95, 1.5, 0.005, 1.2, uv);
       // shadowed underside, laid wet into the first wash
-      float under = smoothstep(0.035, 0.06, uv.y);
+      float under = smoothstep(0.05, 0.075, uv.y);
       col = glaze(col, MAUVE, smoothstep(0.002, -0.006, dc) * under, 0.45);
     }
 
@@ -131,9 +133,14 @@ void main() {
       float c = n * 1.0 + puffs + 0.75 * prof * spread - 0.45;
       d2 = max(min(-c * 0.045, puffCloud(q, wrapX(0.2 + t * 0.007, 0.34), 0.175, 0.3, 0.05, 9.0, 1.0) + 0.004), sheet);
       float top = smoothstep(0.155, 0.11, uv.y);
-      float soft = mix(0.0008, 0.007, top * smoothstep(-0.1, 0.25, gnoise(vec2(x * 9.0, 5.0))));
-      col = wash(col, mix(MAGENTA, mix(SCARLET, MAUVE, step(0.0, wet)), 0.25 + 0.3 * abs(wet)), d2, soft, 0.8, 1.7, 0.004, 1.3, uv);
-      col = glaze(col, CORAL, smoothstep(0.002, -0.012, d2) * smoothstep(0.17, 0.12, uv.y), 0.35);
+      float soft = mix(0.0008, 0.01, max(top * 0.8, smoothstep(0.0, 0.3, gnoise(vec2(x * 9.0, 5.0)))));
+      col = wash(col, mix(MAGENTA * vec3(1.02, 0.96, 0.98), MAUVE, 0.3 * smoothstep(0.15, 0.09, uv.y) * (0.6 + wet)), d2, soft, 1.0, 1.6, 0.005, 1.3, uv);
+      // a wetter bloom inside the cloud: pigment pushed out, a lighter heart with a crinkled rim
+      float bl = length((q - vec2(wrapX(0.17 + t * 0.007, 0.34), 0.13)) * vec2(0.7, 1.4)) - 0.028 * (1.0 + 0.4 * fbm(q * 40.0));
+      col = mix(col, mix(col, PAPER_C, 0.35), smoothstep(0.004, -0.01, bl) * smoothstep(0.002, -0.01, d2));
+      col = glaze(col, MAGENTA, exp(-abs(bl) / 0.0025) * smoothstep(0.0, -0.01, d2), 0.5);
+      // lit from below by the low sun: a coral underside
+      col = glaze(col, CORAL, smoothstep(0.002, -0.012, d2) * smoothstep(0.13, 0.175, uv.y), 0.55);
       // a smaller, darker second glaze inside, crisp
       float d2b = max(d2 + 0.004, (0.12 - wfbm(vec2(x * 11.0, uv.y * 24.0) + 3.0)) * 0.03);
       col = wash(col, MAUVE * MAGENTA * 1.15, d2b, 0.0007, 0.55, 1.4, 0.002, 1.2, uv);
@@ -366,16 +373,16 @@ void main() {
         float sRow = pow(max(cy - fl * 0.5, 0.0) / ROWS, 1.0 / 0.68);
         float SRow = sRow / (1.0 - YH);
         float colC = exp(-pow(abs(cx - drift - hx * 0.02 - SUNX) / (0.03 + 0.2 * SRow), 2.0));
-        float warmP = 0.24 + 0.45 * colC * (1.0 - SRow * 0.5);
+        float warmP = 0.2 + 0.22 * colC * (1.0 - SRow * 0.5);
         bool warm = h2 * 0.7 + h3 * 0.3 < warmP;
-        float dRows = abs(RL - cy) - T * (warm ? 0.55 : 1.0) * taper * (1.0 + wob + crest);
+        float dRows = abs(RL - cy) - T * (warm ? 0.42 : 1.0) * taper * (1.0 + wob + crest);
         float d = dRows * rh;
         if (d > rh * 0.5) continue;
         float endDry = smoothstep(0.55, 1.0, abs(dx));
         d += endDry * (tooth - 0.35) * rh * 0.6;
-        vec3 pig = warm ? (h < 0.4 ? CORAL : (h < 0.75 ? mix(PINK, CORAL, 0.5) : PEACH)) : seaPigment(SRow, h);
-        float dens = warm ? 0.8 + 0.5 * h : 0.7 + 0.8 * h2;
-        dens *= warm ? 1.0 : 0.9 + 0.8 * SRow;
+        vec3 pig = warm ? (h < 0.5 ? CORAL : (h < 0.85 ? mix(PINK, CORAL, 0.5) : PEACH)) : seaPigment(SRow, h);
+        float dens = warm ? 0.8 + 0.5 * h : 0.55 + 0.65 * h2;
+        dens *= warm ? 1.0 : 0.85 + 0.65 * SRow;
         dens *= 1.0 - 0.45 * fl;
         float softE = rh * mix(0.05, 0.35, step(0.72, fract(h * 23.0)));
         float cover = smoothstep(softE, -softE, d) * edgeMask;
@@ -394,29 +401,32 @@ void main() {
     col = mix(col, warmCol, warmCov * 0.92);
 
     // ---- the sun path: broken lifts of bare paper that twinkle ----
-    float glintW = 0.016 + 0.06 * S;
+    float glintW = 0.009 + 0.028 * S;
+    for (int lane = 0; lane < 2; lane++) {
+    float RG = R + float(lane) * 0.5;
     for (int j = 0; j <= 1; j++) {
-      float row = floor(R) + float(j) - 0.0;
-      float cw = 0.028 + 0.035 * wcHash1(vec2(row, 1.3));
+      float row = floor(RG) + float(j);
+      float cw = 0.016 + 0.016 * wcHash1(vec2(row, 1.3));
       float xr = q.x - SUNX + 0.004 * sin(t * 0.5 + row);
       float k = floor(xr / cw + 0.5);
-      vec2 id = vec2(row, k) + 400.0;
+      vec2 id = vec2(row, k) + 400.0 + float(lane) * 77.0;
       float h = wcHash1(id);
       float cx = k * cw;
-      float prob = exp(-pow(abs(cx) / glintW, 1.8)) + 0.006;
+      float prob = exp(-pow(abs(cx) / glintW, 2.0)) * (1.0 - 0.35 * S) + 0.004;
       float tw = 0.5 + 0.5 * sin(t * (1.2 + 1.8 * fract(h * 7.0)) + h * 40.0);
-      if (h < prob * smoothstep(0.0, 0.45, tw)) {
-        float L = cw * (0.3 + 0.35 * fract(h * 3.3)) * (1.0 - 0.45 * S);
+      if (h < prob * (0.5 + 0.5 * tw)) {
+        float L = cw * (0.45 + 0.5 * fract(h * 3.3)) * (1.0 - 0.3 * S);
         float dx = (xr - cx) / L;
         float cyr = row + 0.5 + (fract(h * 5.1) - 0.5) * 0.4;
-        float T = 0.09 + 0.1 * fract(h * 9.7);
+        float T = 0.08 + 0.08 * fract(h * 9.7);
         float taper = pow(max(1.0 - dx * dx, 0.0), 0.6);
-        float d = (abs(R - cyr) - T * taper) * rh + (tooth - 0.5) * rh * 0.12;
+        float d = (abs(RG - cyr) - T * taper) * rh + (tooth - 0.5) * rh * 0.12;
         float lift = smoothstep(rh * 0.05, -rh * 0.05, d) * edgeMask;
         float glow = smoothstep(rh * 0.6, 0.0, d) * edgeMask;
         col *= pow(PEACH, vec3(glow * 0.25));
         col = mix(col, PAPER_C * vec3(1.0, 0.99, 0.96), lift * 0.92);
       }
+    }
     }
 
     // ---- cursor glints: little sparks of lifted paper with a warm halo ----
