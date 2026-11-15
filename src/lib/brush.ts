@@ -50,6 +50,8 @@ export interface Shape {
   path: Path2D;
   /** bounding box x, y, w, h */
   box: [number, number, number, number];
+  /** fill with the even-odd rule (rings, washes painted around a reserved shape) */
+  evenodd?: boolean;
 }
 
 export interface WashOpts {
@@ -133,9 +135,10 @@ export class Painter {
     if (o.soft) g.filter = `blur(${o.soft}px)`;
     g.globalAlpha = o.alpha;
     g.fillStyle = rgb(o.color);
-    g.fill(shape.path);
+    const rule: CanvasFillRule = shape.evenodd ? "evenodd" : "nonzero";
+    g.fill(shape.path, rule);
     g.filter = "none";
-    g.clip(shape.path);
+    g.clip(shape.path, rule);
     if (o.pool) {
       const top = o.pool > 0;
       const lg = g.createLinearGradient(0, by, 0, by + bh);

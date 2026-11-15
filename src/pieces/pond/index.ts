@@ -1,14 +1,15 @@
 import * as THREE from "three";
 import type { MountPiece, PieceContext, PieceInstance } from "../types";
 import { FULLSCREEN_VERT, GLSurface, PingPong } from "../../lib/glpiece";
-import { PAINT_FRAG } from "./paint.glsl";
+import { paintPond } from "./paint";
 import { COMPOSITE_FRAG, MAX_DROPS, SIM_FRAG } from "./water.glsl";
 import { ASPECT, POND, pondR, pondSDF } from "./shape";
 
 /**
  * Pond, early morning.
- * A procedural watercolour painted once into a texture, then brought to life every
- * frame by a GPU height-field ripple simulation that refracts and lifts the pigment.
+ * A watercolour painted once at load (Canvas2D washes), then brought to life every
+ * frame: slow swells and a breeze bend the paint, and a GPU height-field ripple
+ * simulation refracts and lifts the pigment where the boat, ducks and pointer move.
  */
 
 const SIM_W = 360;
@@ -30,13 +31,12 @@ const mount: MountPiece = (ctx: PieceContext): PieceInstance => {
   const motion = ctx.reducedMotion ? 0.25 : 1;
 
   // ----- materials -----
-  const paintMat = new THREE.ShaderMaterial({
-    vertexShader: FULLSCREEN_VERT,
-    fragmentShader: PAINT_FRAG,
-    uniforms: { uPaperScale: { value: new THREE.Vector2(ctx.width, ctx.height) } },
-    depthTest: false,
-    depthWrite: false,
-  });
+  // the painting itself is made once, on the CPU, then only sampled
+  const paintTex = new THREE.CanvasTexture(paintPond(2160, 1440));
+  paintTex.colorSpace = THREE.NoColorSpace;
+  paintTex.minFilter = THREE.LinearMipmapLinearFilter;
+  paintTex.magFilter = THREE.LinearFilter;
+  paintTex.anisotropy = 4;
   const drops = Array.from({ length: MAX_DROPS }, () => new THREE.Vector4());
   const sim = new PingPong(SIM_W, SIM_H);
   const simMat = new THREE.ShaderMaterial({
@@ -57,7 +57,7 @@ const mount: MountPiece = (ctx: PieceContext): PieceInstance => {
     vertexShader: FULLSCREEN_VERT,
     fragmentShader: COMPOSITE_FRAG,
     uniforms: {
-      uPaint: { value: null },
+      uPaint: { value: paintTex },
       uSim: { value: sim.a.texture },
       uSimTexel: { value: new THREE.Vector2(1 / SIM_W, 1 / SIM_H) },
       uPaperScale: { value: new THREE.Vector2(ctx.width, ctx.height) },
@@ -70,8 +70,6 @@ const mount: MountPiece = (ctx: PieceContext): PieceInstance => {
     depthWrite: false,
   });
 
-  let paintRT: THREE.WebGLRenderTarget | null = null;
-  let dirtyPaint = true;
 
   // ----- drops queue -----
   const queue: { u: V2; r: number; s: number }[] = [];
@@ -253,23 +251,9 @@ const mount: MountPiece = (ctx: PieceContext): PieceInstance => {
   const instance: PieceInstance = {
     setResolution(ppu) {
       gl.setSize(ctx.width * ppu, ctx.height * ppu);
-      paintRT?.dispose();
-      paintRT = new THREE.WebGLRenderTarget(gl.width, gl.height, {
-        type: THREE.UnsignedByteType,
-        minFilter: THREE.LinearFilter,
-        magFilter: THREE.LinearFilter,
-        depthBuffer: false,
-      });
-      compMat.uniforms.uPaint.value = paintRT.texture;
-      dirtyPaint = true;
     },
     frame(time, dt) {
       clock = time;
-      if (!paintRT) return;
-      if (dirtyPaint) {
-        gl.draw(paintMat, paintRT);
-        dirtyPaint = false;
-      }
       updateCreatures(time, dt);
       // two sim steps per frame; drops go in on the first
       for (let step = 0; step < 2; step++) {
@@ -292,9 +276,8 @@ const mount: MountPiece = (ctx: PieceContext): PieceInstance => {
       ctx.el.removeEventListener("pointermove", onMove);
       ctx.el.removeEventListener("pointerleave", onLeave);
       ctx.el.removeEventListener("pointerdown", onDown);
-      paintRT?.dispose();
       sim.dispose();
-      paintMat.dispose();
+      paintTex.dispose();
       simMat.dispose();
       compMat.dispose();
       gl.dispose();

@@ -61,7 +61,7 @@ ${NOISE}
 ${PAPER}
 ${POND_GLSL}
 
-const vec3 PAPER    = vec3(0.984, 0.980, 0.968);
+const vec3 PAPER    = vec3(1.0);
 const vec3 SEPIA    = vec3(0.420, 0.360, 0.320);
 const vec3 INDIGO   = vec3(0.600, 0.650, 0.760);
 const vec3 ULTRA    = vec3(0.660, 0.720, 0.930);
@@ -174,16 +174,17 @@ void main() {
   float hd = simH(uv + vec2(0.0, e.y));
   vec2 grad = vec2(hr - hl, hd - hu);
 
-  float water = texture2D(uPaint, vUv).a;
+  float water = smoothstep(0.006, -0.012, pondSDF(q));
 
-  // a breath of wind keeps the water from ever being perfectly still
+  // the surface is never still: slow diagonal swells and a wandering breeze bend the paint
   float t = uTime * uMotion;
-  vec2 wind = vec2(gnoise(q * vec2(9.0, 26.0) + vec2(t * 0.25, -t * 0.11)),
-                   gnoise(q * vec2(9.0, 26.0) + vec2(4.0 - t * 0.21, t * 0.17))) * 0.0011;
+  vec2 dir1 = normalize(vec2(0.62, 0.78)), dir2 = normalize(vec2(-0.8, 0.45));
+  vec2 wind = dir1.yx * vec2(1.0, -1.0) * sin(dot(q, dir1) * 34.0 - t * 0.9) * 0.0016
+            + dir2 * sin(dot(q, dir2) * 21.0 - t * 0.6 + 1.3) * 0.0013
+            + vec2(gnoise(q * 7.0 + vec2(t * 0.07, -t * 0.05)), gnoise(q * 7.0 + vec2(5.0 - t * 0.06, t * 0.08))) * 0.0028;
 
   vec2 off = (grad * 0.16 + wind) * water;
-  vec4 paint = texture2D(uPaint, flipY(uv + off));
-  vec3 col = paint.rgb;
+  vec3 col = texture2D(uPaint, flipY(uv + off)).rgb;
 
   // painterly ripple shading: streaky, broken, along the wave fronts
   float g = length(grad);
@@ -196,9 +197,6 @@ void main() {
   float pool = smoothstep(0.12, 0.48, -sh + streak * 0.22 - (tooth - 0.5) * 0.2) * water;
   col = mix(col, PAPER, lift * 0.78);
   col *= pow(ULTRA * INDIGO, vec3(pool * 0.55));
-  // a thin dark ink mark on the steepest fronts, like a quick pen ripple
-  float front = smoothstep(0.45, 0.7, -sh + streak * 0.2) * smoothstep(0.95, 0.7, -sh + streak * 0.2);
-  col *= pow(SEPIA, vec3(front * 0.25 * water));
 
   // creatures (they ride the ripples a little)
   vec2 qb = q + grad * 0.02;
@@ -207,15 +205,11 @@ void main() {
     col = drawDuck(col, qb, pp, uDucks[i], i == 0 ? 1.0 : 0.0);
   }
 
-  // the paper itself: a whisper of relief over everything
-  float ps = paperShade(pp);
-  col *= 1.0 + ps * 0.10;
-  col -= 0.012 * (1.0 - tooth) * (1.0 - dot(col, vec3(0.33)));
-
-  // "un-paint" the paper: output only the pigment, so the page itself is the paper.
-  // Over a paper-coloured page, premultiplied (P*(T-1+a), a) composites to exactly P*T.
-  vec3 T = clamp(col / PAPER, 0.0, 1.0);
-  float a = 1.0 - min(T.r, min(T.g, T.b));
-  gl_FragColor = vec4(PAPER * (T - 1.0 + a), a);
+  // "un-paint" against the white page: pigment becomes coverage, bare paper stays clear;
+  // the paper's tooth shows only where there is pigment
+  col = clamp(col, 0.0, 1.0);
+  float a = 1.0 - min(col.r, min(col.g, col.b));
+  float dens = clamp(a * (1.0 + paperShade(pp) * 0.6 + (tooth - 0.5) * 0.1), 0.0, 1.0);
+  gl_FragColor = vec4((col - 1.0 + a) * (dens / max(a, 1e-4)), dens);
 }
 `;
