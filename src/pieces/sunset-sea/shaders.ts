@@ -1,4 +1,4 @@
-import { NOISE, PAPER } from "../../lib/watercolor.glsl";
+import { NOISE } from "../../lib/watercolor.glsl";
 
 export const ASP = 600 / 1060; // width / height
 export const HORIZON = 0.405; // uv y (down) of the horizon
@@ -35,27 +35,37 @@ void main() {
 `;
 
 /**
- * Per frame: sample the static painting through a moving water surface.
+ * Per frame: sample the painting through a moving water surface.
  * Swells are defined in world space on a ground plane seen in perspective, so they
  * shrink and slow toward the horizon by themselves. They lift and shear the painted
- * strokes, glints twinkle on the facing slopes, and the ripple sim refracts the paint.
+ * strokes; the bright flecks down the sun path shimmer on the facing slopes; the
+ * ripple sim refracts the paint. The sky only breathes. A soft, irregular mask gives
+ * the sheet a hand-cut watercolour edge with a faint dried rim.
  */
 export const COMPOSITE_FRAG = /* glsl */ `
 precision highp float;
 varying vec2 vUv;
 uniform sampler2D uBase;
-uniform sampler2D uGlint;
 uniform sampler2D uSim;
 uniform vec2 uSimTexel;
-uniform vec2 uPaperScale;
 uniform float uTime;
 uniform float uAmp;
 ${NOISE}
-${PAPER}
 const float ASP = ${ASP.toFixed(5)};
 const float YH = ${HORIZON.toFixed(4)};
+const float SUNX = ${SUN_X.toFixed(4)};
 
 vec3 base(vec2 uv) { return texture2D(uBase, vec2(uv.x, 1.0 - uv.y)).rgb; }
+
+// distance (in sheet-height units) inside a gently irregular rectangle
+float edgeDist(vec2 uv) {
+  float dl = uv.x * ASP, dr = (1.0 - uv.x) * ASP, dt = uv.y, db = 1.0 - uv.y;
+  float wl = 0.007 * fbm3(vec2(uv.y * 5.0, 1.0)) + 0.0022 * gnoise(vec2(uv.y * 38.0, 3.0));
+  float wr = 0.007 * fbm3(vec2(uv.y * 5.0, 7.0)) + 0.0022 * gnoise(vec2(uv.y * 41.0, 9.0));
+  float wt = 0.006 * fbm3(vec2(uv.x * 6.0, 13.0)) + 0.002 * gnoise(vec2(uv.x * 45.0, 15.0));
+  float wb = 0.007 * fbm3(vec2(uv.x * 6.0, 19.0)) + 0.0022 * gnoise(vec2(uv.x * 40.0, 21.0));
+  return min(min(dl + wl, dr + wr), min(dt + wt, db + wb)) - 0.011;
+}
 
 void main() {
   vec2 uv = vec2(vUv.x, 1.0 - vUv.y);
@@ -63,11 +73,9 @@ void main() {
   vec2 d = vec2(0.0);
   float slope = 0.0;
   float s = (uv.y - YH) / (1.0 - YH);
-  float sea = smoothstep(0.0, 0.004, s);
-  vec2 simD = vec2(0.0);
   float sh = 0.0;
+  float ss = max(s, 0.015);
   if (s > 0.0) {
-    float ss = max(s, 0.015);
     float X = (uv.x - 0.5) * ASP / ss;
     float Z = 1.0 / ss;
     // long rolling swells + a cross sea, world-space
@@ -79,50 +87,49 @@ void main() {
     slope = cos(p1) + 0.6 * cos(p2) + 0.5 * cos(p3) + 0.3 * cos(p4);
     float fade = smoothstep(0.0, 0.12, s);
     float A = uAmp * ss * fade;
-    d.y += A * 0.0068 * h;
-    // the strokes sway sideways as the swell passes, and drift a little
-    d.x += A * (0.0055 * sin(p2 * 0.5 + Z * 0.7 - t * 0.2) + 0.0032 * cos(p1 + X * 0.3));
+    d.y += A * 0.0055 * h;
+    // the strokes sway sideways as the swell passes
+    d.x += A * (0.0045 * sin(p2 * 0.5 + Z * 0.7 - t * 0.2) + 0.0026 * cos(p1 + X * 0.3));
 
-    // pointer ripples (sea space sim)
+    // pointer ripples (sea-space sim)
     vec2 st = vec2(uv.x, 1.0 - s);
     float hx = texture2D(uSim, st + vec2(uSimTexel.x, 0.0)).r - texture2D(uSim, st - vec2(uSimTexel.x, 0.0)).r;
     float hy = texture2D(uSim, st - vec2(0.0, uSimTexel.y)).r - texture2D(uSim, st + vec2(0.0, uSimTexel.y)).r;
-    simD = vec2(hx, hy);
     d += vec2(hx * 0.22, hy * 0.36) * (0.4 + ss);
     sh = (hy * 22.0 + hx * 5.0) * (0.5 + ss);
   } else {
-    // the sky barely breathes: still-wet washes
-    float k = smoothstep(0.0, -0.05, s);
-    d.x += 0.0011 * sin(uv.y * 23.0 + t * 0.21) * k + 0.0006 * sin(uv.y * 61.0 - t * 0.33);
-    d.y += 0.0007 * sin(uv.x * 9.0 + t * 0.17) * k;
+    // the sky barely breathes: still-wet washes, clouds swaying a hair
+    float k = smoothstep(0.0, -0.06, s);
+    d.x += (0.0012 * sin(uv.y * 17.0 + t * 0.13) + 0.0005 * sin(uv.y * 53.0 - t * 0.21)) * k;
+    d.y += 0.0005 * sin(uv.x * 7.0 + t * 0.11) * k;
   }
 
   vec2 suv = uv + d;
-  // keep the horizon a clean line: sky never samples sea and vice versa
-  if (s > 0.0) suv.y = max(suv.y, YH + 0.0003);
+  if (s > 0.0) suv.y = max(suv.y, YH + 0.0008);
+  else suv.y = min(suv.y, YH - 0.0008);
   vec3 col = base(suv);
 
-  // glints twinkle on the slopes that face the sun, each fleck on its own beat
   if (s > 0.0) {
-    vec2 guv = suv + vec2(0.0012 * sin(t * 2.3 + uv.y * 300.0), 0.0) * s;
-    vec4 gl = texture2D(uGlint, vec2(guv.x, 1.0 - guv.y));
-    float id = gl.r;
-    float beat = 0.5 + 0.5 * sin(t * (1.1 + id * 2.6) + id * 61.0);
-    float face = smoothstep(-0.6, 0.9, slope * 0.55 + 0.25 + (id - 0.5));
-    float tw = smoothstep(0.25, 0.75, beat * 0.6 + face * 0.6);
-    col = mix(col, vec3(1.0, 0.985, 0.97), gl.a * tw * 0.96);
+    // the sun path: bright flecks near the centre column shimmer on the facing slopes
+    float lum = dot(col, vec3(0.3, 0.5, 0.2));
+    float colW = 0.035 + 0.16 * ss;
+    float inPath = exp(-pow((uv.x - SUNX) / colW, 2.0));
+    float bright = smoothstep(0.78, 0.93, lum) * inPath;
+    float flick = gnoise(vec2(suv.x * 90.0, suv.y * 420.0) + vec2(t * 0.6, -t * 1.4));
+    float sparkle = clamp(0.5 + 1.4 * flick + 0.35 * slope * 0.5, 0.0, 1.0);
+    col = mix(col, vec3(1.0, 0.99, 0.97), bright * smoothstep(0.45, 1.0, sparkle) * 0.75);
+    col *= 1.0 - bright * (1.0 - sparkle) * 0.12;
+    // a warm lift where the swell faces the sun, broad and slow
+    col = mix(col, col * vec3(1.03, 1.0, 0.98) + 0.03, inPath * smoothstep(0.4, 1.4, slope) * 0.5);
     // ripple light: facing slopes lift toward paper, the others pool a little pigment
     col = mix(col, vec3(1.0, 0.97, 0.95), clamp(sh, 0.0, 1.0) * 0.3);
-    col *= mix(vec3(1.0), vec3(0.86, 0.84, 0.95), clamp(-sh, 0.0, 1.0) * 0.6);
+    col *= mix(vec3(1.0), vec3(0.86, 0.84, 0.95), clamp(-sh, 0.0, 1.0) * 0.5);
   }
 
-  // un-paint against the white page: pigment becomes coverage, white stays clear
-  float a = 1.0 - min(col.r, min(col.g, col.b));
-  // paper tooth, only where there is pigment
-  vec2 pp = uv * uPaperScale;
-  float tooth = paperHeight(pp) - paperHeight(pp + vec2(1.1, 1.1));
-  float dens = clamp(a * (1.0 + tooth * 0.5 + (paperHeight(pp * 0.7) - 0.5) * 0.12), 0.0, 1.0);
-  vec3 pre = (col - 1.0 + a) * (dens / max(a, 1e-4));
-  gl_FragColor = vec4(pre, dens);
+  // hand-cut sheet edge: soft but irregular, with pigment dried darker along it
+  float e = edgeDist(uv);
+  float m = smoothstep(-0.0015, 0.0035, e);
+  col *= mix(1.0, 0.93, exp(-max(e, 0.0) / 0.004) * m);
+  gl_FragColor = vec4(clamp(col, 0.0, 1.0) * m, m);
 }
 `;

@@ -2,36 +2,26 @@ import * as THREE from "three";
 import type { MountPiece, PieceInstance } from "../types";
 import { FULLSCREEN_VERT, GLSurface, PingPong } from "../../lib/glpiece";
 import { COMPOSITE_FRAG, HORIZON, MAX_DROPS, SIM_FRAG } from "./shaders";
-import { paintSunset } from "./paint";
+import paintingUrl from "./sunset.webp?url";
 
 /**
  * Sunset sea.
- * Painted once at load (sky glazes, clouds, the sea in perspective rows of strokes),
- * then sampled every frame through a moving water surface: swells roll the strokes,
- * glints twinkle down the sun path, and the pointer leaves ripples that bend the paint.
+ * Aryan's watercolour, brought to life the way kayak.whimsy.land animates its painting:
+ * the painted sea is sampled every frame through a moving water surface. Swells roll
+ * the strokes (smaller and slower toward the horizon), the sun path shimmers, and the
+ * pointer leaves ripples that bend the paint. The sky only breathes.
  */
 
 const SIM_W = 200;
 const SIM_H = 300;
-const BASE_W = 1200;
-const BASE_H = 2120;
 
-const mount: MountPiece = (ctx): PieceInstance => {
+const mount: MountPiece = async (ctx): Promise<PieceInstance> => {
   const gl = new GLSurface(ctx.el);
-  const t0 = performance.now();
-  const { base, glints } = paintSunset(BASE_W, BASE_H);
-  if (location.search.includes("debug")) console.warn("sunset painted in", Math.round(performance.now() - t0), "ms");
-  const texOf = (c: HTMLCanvasElement, mip: boolean) => {
-    const t = new THREE.CanvasTexture(c);
-    t.colorSpace = THREE.NoColorSpace;
-    t.minFilter = mip ? THREE.LinearMipmapLinearFilter : THREE.LinearFilter;
-    t.magFilter = THREE.LinearFilter;
-    t.generateMipmaps = mip;
-    t.anisotropy = 4;
-    return t;
-  };
-  const baseTex = texOf(base, true);
-  const glintTex = texOf(glints, true);
+  const baseTex = await new THREE.TextureLoader().loadAsync(paintingUrl);
+  baseTex.colorSpace = THREE.NoColorSpace;
+  baseTex.minFilter = THREE.LinearMipmapLinearFilter;
+  baseTex.magFilter = THREE.LinearFilter;
+  baseTex.anisotropy = 4;
 
   const sim = new PingPong(SIM_W, SIM_H);
   const drops = Array.from({ length: MAX_DROPS }, () => new THREE.Vector4());
@@ -53,10 +43,8 @@ const mount: MountPiece = (ctx): PieceInstance => {
     fragmentShader: COMPOSITE_FRAG,
     uniforms: {
       uBase: { value: baseTex },
-      uGlint: { value: glintTex },
       uSim: { value: sim.a.texture },
       uSimTexel: { value: new THREE.Vector2(1 / SIM_W, 1 / SIM_H) },
-      uPaperScale: { value: new THREE.Vector2(ctx.width, ctx.height) },
       uTime: { value: 0 },
       uAmp: { value: ctx.reducedMotion ? 0.25 : 1 },
     },
@@ -100,7 +88,6 @@ const mount: MountPiece = (ctx): PieceInstance => {
 
   if (location.search.includes("debug")) {
     (window as unknown as Record<string, unknown>).__sunsetPoke = (x: number, y: number) => addDrop({ x, y }, 0.06, 0.25);
-    (window as unknown as Record<string, unknown>).__sunsetBase = base;
   }
 
   return {
@@ -128,7 +115,6 @@ const mount: MountPiece = (ctx): PieceInstance => {
       ctx.el.removeEventListener("pointerdown", onDown);
       sim.dispose();
       baseTex.dispose();
-      glintTex.dispose();
       simMat.dispose();
       compMat.dispose();
       gl.dispose();
