@@ -63,7 +63,7 @@ export class App {
         <button class="dock-btn" data-home title="Back to overview (0)">overview</button>
       </nav>
       <div class="index-panel" role="dialog" aria-label="Index of pieces"><ol></ol></div>
-      <p class="hint">drag to wander &nbsp;·&nbsp; scroll or pinch to zoom &nbsp;·&nbsp; click a piece to step inside</p>
+      <p class="hint"><span class="hint-wide">drag to wander &nbsp;·&nbsp; scroll or pinch to zoom &nbsp;·&nbsp; click a piece to step inside</span><span class="hint-touch">drag &nbsp;·&nbsp; pinch &nbsp;·&nbsp; tap a piece</span></p>
     `;
     this.world = this.root.querySelector(".world")!;
     this.grainA = this.root.querySelector(".grain-a")!;
@@ -194,7 +194,15 @@ export class App {
     const W = window.innerWidth, H = window.innerHeight;
     const ins = this.insets();
     const s = Math.min((W - ins.side * 2) / (x1 - x0), (H - ins.top - ins.bottom) / (y1 - y0));
-    return { cx: (x0 + x1) / 2, cy: (y0 + y1) / 2 - (ins.top - ins.bottom) / 2 / s, s: s * 0.92 };
+    const all = { cx: (x0 + x1) / 2, cy: (y0 + y1) / 2 - (ins.top - ins.bottom) / 2 / s, s: s * 0.92 };
+    // on narrow screens everything at once is too small: open on the headline piece,
+    // with its neighbours peeking in from the sides as an invitation to wander
+    if (s < 0.3 && W < 760) {
+      const head = this.defs.find((d) => d.slug === "sunset-sea") ?? this.defs[0];
+      const v = this.fitView(head);
+      return { ...v, s: v.s * 0.82 };
+    }
+    return all;
   }
 
   private fitView(d: PieceDefinition): View {

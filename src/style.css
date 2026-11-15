@@ -297,12 +297,14 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 @media (max-width: 700px) {
   .hud { display: none; }
   .wordmark .by { display: none; }
-  .hint { font-size: 10px; }
+  .hint { font-size: 10px; bottom: calc(max(16px, env(safe-area-inset-bottom)) + 44px); }
   .fb-meta { display: none; }
   .fb-close { right: 12px; }
 }
-@media (hover: none) {
-  .hint { content: ""; }
+.hint-touch { display: none; }
+@media (hover: none), (max-width: 700px) {
+  .hint-wide { display: none; }
+  .hint-touch { display: inline; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }

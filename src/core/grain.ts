@@ -41,8 +41,8 @@ export function makeGrainDataURL(size = 256): string {
   const octaves = [
     { cells: 128, w: 0.45 },
     { cells: 64, w: 0.3 },
-    { cells: 32, w: 0.15 },
-    { cells: 8, w: 0.1 },
+    { cells: 32, w: 0.18 },
+    { cells: 8, w: 0.04 },
   ];
   const acc = new Float32Array(size * size);
   octaves.forEach((o, i) => {
