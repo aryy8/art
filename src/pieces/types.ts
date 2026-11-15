@@ -47,10 +47,10 @@ export type MountPiece = (ctx: PieceContext) => PieceInstance | Promise<PieceIns
 export interface PieceDefinition {
   /** Folder name, used in the URL hash (#pond). */
   slug: string;
+  /** Not shown on the page; used as the piece's accessible name. */
   title: string;
-  /** Free-form, shown as written, e.g. "Nov 2026". */
+  /** Free-form, e.g. "Nov 2026". Kept for the record, not shown. */
   date: string;
-  description?: string;
   /** World position of the piece's top-left corner and its size, in world units. */
   x: number;
   y: number;
