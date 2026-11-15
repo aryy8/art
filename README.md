@@ -15,7 +15,7 @@ npm run preview   # serve dist/ on http://localhost:4173
 npm run shots     # headless screenshots into shots/ (needs `npm run preview` running)
 ```
 
-Deep links work: `/#pond`, `/#sunset-sea`, `/#ink-breath` open straight into a piece.
+Deep links work: `/#sunset-sea` opens straight into the piece.
 
 ## Deploying
 
@@ -32,8 +32,6 @@ On **Cloudflare Pages** use the same build command and `dist` as the output dire
   resolution the current zoom needs (DPR aware).
 - `src/lib/watercolor.glsl.ts` — shared GLSL: noise/fbm, paper height, Beer–Lambert glazes with edge
   darkening and granulation, and `deckle()`, the hand-painted edge.
-- `src/lib/brush.ts` — a Canvas2D watercolour painter (glazes, dried rims, granulation, varied brush
-  strokes) for painting a static base once at load.
 - `src/lib/glpiece.ts` — a transparent Three.js surface, fullscreen-quad drawing and float ping-pong targets.
 
 Pieces render onto transparent canvases straight onto the white page: no frames, cards or shadows.
@@ -77,17 +75,13 @@ interaction when `ctx.isFocused()` is true (otherwise the click is the shell's, 
 
 ## The pieces
 
-- **Pond, early morning** (`src/pieces/pond`) — a few large hard-edged washes painted once at load
-  (`paint.ts`, light to dark, no ink lines), brought to
-  life by a GPU ping-pong height-field ripple simulation that refracts the pigment, lifts it on crests
-  and pools it in troughs. A kayak paddles a loop and a duck family drifts, shies from the cursor and
-  leaves wakes. Inspired by the feel of kayak.whimsy.land; all code and visuals are original.
 - **Sunset sea** (`src/pieces/sunset-sea`) — Aryan's own watercolour (`sunset.webp`) brought to life
   the way kayak.whimsy.land animates its painting: below the horizon the painting is sampled through
   perspective swells (smaller and slower toward the horizon), the sun path shimmers on the facing
   slopes, and a GPU ripple sim lets the pointer bend the paint. The sky only breathes, and a soft
-  irregular mask gives the sheet a hand-cut edge. (The earlier fully procedural version is in git history.)
-- **Ink, breathing** (`src/pieces/ink-breath`) — a tiny Canvas2D study proving the system.
+  painted edge finishes the sheet: granular wet bleeds, dark tide lines, hard dried rims and dry-brush
+  breaks, different on every side. (The earlier fully procedural version, and the retired *Pond* and
+  *Ink, breathing* pieces, are in git history.)
 
 `prefers-reduced-motion` slows everything to a near-stillness (pieces still respond to you), camera
 moves become instant, and UI transitions are removed.

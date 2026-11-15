@@ -37,20 +37,9 @@ const swirl = (sel) => async (page) => {
   await page.waitForTimeout(900);
 };
 
-const zoomOut = async (page) => {
-  for (let i = 0; i < 4; i++) {
-    await page.keyboard.press("-");
-    await page.waitForTimeout(500);
-  }
-  await page.waitForTimeout(3500);
-};
-
 await shoot("overview", { wait: 7000 });
-await shoot("canvas-wide", { wait: 5000, act: zoomOut });
-await shoot("pond-v3", { hash: "#pond", wait: 8000 });
-await shoot("pond-ripples", { hash: "#pond", wait: 5000, act: swirl('[data-slug="pond"] .piece-surface') });
 await shoot("sunset-v5", { hash: "#sunset-sea", wait: 8000 });
+await shoot("sunset-edges", { w: 1000, h: 1000, wait: 8000 });
 await shoot("sunset-ripples", { hash: "#sunset-sea", wait: 5000, act: swirl('[data-slug="sunset-sea"] .piece-surface') });
-await shoot("ink-focused", { hash: "#ink-breath", wait: 4000 });
 await shoot("mobile", { w: 390, h: 844, dpr: 2, wait: 7000 });
 await browser.close();

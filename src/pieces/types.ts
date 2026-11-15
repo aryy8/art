@@ -45,7 +45,7 @@ export interface PieceInstance {
 export type MountPiece = (ctx: PieceContext) => PieceInstance | Promise<PieceInstance>;
 
 export interface PieceDefinition {
-  /** Folder name, used in the URL hash (#pond). */
+  /** Folder name, used in the URL hash (#sunset-sea). */
   slug: string;
   /** Not shown on the page; used as the piece's accessible name. */
   title: string;
