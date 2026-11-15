@@ -49,7 +49,7 @@ float cloudField(vec2 q, float drift, vec2 freq, float seed) {
 }
 
 // a cumulus seen at sunset: scalloped puffs on a flat base, all drifting together
-float puffCloud(vec2 q, float cx, float baseY, float w, float h, float seed) {
+float puffCloud(vec2 q, float cx, float baseY, float w, float h, float seed, float sq) {
   float d = 1e3;
   for (int i = 0; i < 8; i++) {
     float fi = float(i);
@@ -58,11 +58,11 @@ float puffCloud(vec2 q, float cx, float baseY, float w, float h, float seed) {
     float x = cx + f * w + (hs - 0.5) * w * 0.12;
     float r = h * (0.45 + 0.55 * hs) * (1.0 - 0.65 * f * f * 4.0 * 0.6);
     vec2 c = vec2(x, baseY - r * 0.45);
-    d = min(d, length((q - c) * vec2(0.8, 1.0)) - r);
+    d = min(d, length((q - c) * vec2(0.8 * sq, 1.0)) - r);
   }
   // flat, slightly wavering base
   d = max(d, (q.y - baseY) - 0.004 * gnoise(vec2(q.x * 40.0, seed)));
-  d += 0.006 * fbm(q * 34.0 + seed) + 0.0018 * gnoise(q * 160.0 + seed);
+  d += 0.006 * fbm(q * vec2(20.0, 45.0) + seed) + 0.0018 * gnoise(q * 160.0 + seed);
   return d;
 }
 float wrapX(float x, float w) { float span = ASP + w * 1.2; return mod(x + w * 0.6, span) - w * 0.6; }
@@ -107,9 +107,9 @@ void main() {
     // high mauve clouds: two small cumulus drifting right
     {
       float ca = wrapX(0.36 + t * 0.0045, 0.22);
-      float da = puffCloud(q, ca, 0.062, 0.2, 0.03, 1.0);
+      float da = puffCloud(q, ca, 0.062, 0.2, 0.03, 1.0, 1.0);
       float cb = wrapX(0.05 + t * 0.0038, 0.16);
-      float db = puffCloud(q, cb, 0.048, 0.15, 0.022, 4.0);
+      float db = puffCloud(q, cb, 0.048, 0.15, 0.022, 4.0, 1.0);
       float dc = min(da, db);
       float topSoft = smoothstep(0.05, 0.02, uv.y);
       col = wash(col, mix(MAUVE, MAGENTA, 0.25 + 0.35 * wet), dc, mix(0.001, 0.006, topSoft), 0.9, 1.7, 0.004, 1.2, uv);
@@ -129,7 +129,7 @@ void main() {
       float n = wfbm(vec2(x * 6.0, uv.y * 11.0) + 7.0);
       float puffs = 0.25 * gnoise(vec2(x * 22.0, uv.y * 14.0) + 2.0);
       float c = n * 1.0 + puffs + 0.75 * prof * spread - 0.45;
-      d2 = max(min(-c * 0.045, puffCloud(q, wrapX(0.2 + t * 0.007, 0.34), 0.175, 0.3, 0.05, 9.0) + 0.004), sheet);
+      d2 = max(min(-c * 0.045, puffCloud(q, wrapX(0.2 + t * 0.007, 0.34), 0.175, 0.3, 0.05, 9.0, 1.0) + 0.004), sheet);
       float top = smoothstep(0.155, 0.11, uv.y);
       float soft = mix(0.0008, 0.007, top * smoothstep(-0.1, 0.25, gnoise(vec2(x * 9.0, 5.0))));
       col = wash(col, mix(MAGENTA, mix(SCARLET, MAUVE, step(0.0, wet)), 0.25 + 0.3 * abs(wet)), d2, soft, 0.8, 1.7, 0.004, 1.3, uv);
@@ -165,6 +165,16 @@ void main() {
       col = wash(col, mix(CORAL, MAGENTA, 0.35 + 0.3 * gnoise(vec2(x * 5.0, 1.0))), d, 0.0008, 0.8, 1.5, 0.002, 1.0, uv);
     }
 
+    // a coral cumulus low on the right, and a lilac one on the left near the horizon
+    {
+      float cr = wrapX(0.44 + t * 0.006, 0.24);
+      float dr = puffCloud(q, cr, 0.262, 0.3, 0.016, 13.0, 0.35);
+      col = wash(col, mix(SCARLET, CORAL, 0.4 + 0.4 * wet), dr, 0.0009, 0.85, 1.7, 0.003, 1.2, uv);
+      float cl = wrapX(0.1 + t * 0.005, 0.22);
+      float dl = puffCloud(q, cl, 0.345, 0.26, 0.012, 17.0, 0.3);
+      col = wash(col, mix(MAUVE, MAGENTA, 0.4), dl, 0.0009, 0.85, 1.6, 0.003, 1.2, uv);
+    }
+
     // lilac and coral streaks a little higher, thin and broken
     {
       float x = q.x + t * 0.008;
@@ -179,8 +189,8 @@ void main() {
     {
       float x = q.x + t * 0.012;
       float part = smoothstep(0.04, 0.1, abs(q.x - SUNX));
-      float v = (uv.y - 0.36) / 0.018;
-      float cov = smoothstep(-0.05, 0.3, gnoise(vec2(x * 5.0, 13.0)));
+      float v = (uv.y - 0.36) / 0.022;
+      float cov = smoothstep(-0.25, 0.15, gnoise(vec2(x * 5.0, 13.0)));
       float c = wfbm(vec2(x * 3.4, uv.y * 60.0) + 21.0) + 0.65 * (1.0 - v * v) * part * cov - 0.5;
       float d = max(-c * 0.025, sheet);
       col = wash(col, mix(SCARLET, MAGENTA, 0.45 + 0.5 * gnoise(vec2(x * 6.0, 2.0))), d, 0.0007, 0.95, 1.6, 0.002, 1.1, uv);
@@ -327,11 +337,11 @@ void main() {
         float h = wcHash1(id);
         float h2 = wcHash1(id + 31.0);
         float h3 = wcHash1(id + 77.0);
-        if (h3 < 0.16) continue; // gaps let the ground wash and paper through
+        if (h3 < 0.1) continue; // gaps let the ground wash and paper through
         float L = cw * (0.38 + 0.4 * h2);
         float cx = (k + 0.5 + (h - 0.5) * 0.4) * cw;
         float cy = row + 0.5 + (h2 - 0.5) * 0.5 + 0.12 * sin(t * 0.6 + k * 1.7 + row);
-        float T = 0.26 + 0.34 * h;
+        float T = 0.3 + 0.36 * h;
         float dx = (xr - cx) / L;
         float taper = pow(max(1.0 - pow(abs(dx), 2.6), 0.0), 0.45);
         // brushy edge: wobble along the stroke, ragged dry-brush ends
@@ -351,7 +361,7 @@ void main() {
         float endDry = smoothstep(0.55, 1.0, abs(dx));
         d += endDry * (tooth - 0.35) * rh * 0.6;
         vec3 pig = warm ? (h < 0.4 ? CORAL : (h < 0.75 ? mix(PINK, CORAL, 0.5) : PEACH)) : seaPigment(SRow, h);
-        float dens = warm ? 0.5 + 0.3 * h : 0.55 + 0.75 * h2;
+        float dens = warm ? 0.55 + 0.3 * h : 0.7 + 0.8 * h2;
         dens *= warm ? 1.0 : 0.9 + 0.8 * SRow;
         float softE = rh * mix(0.05, 0.35, step(0.72, fract(h * 23.0)));
         float cover = smoothstep(softE, -softE, d) * edgeMask;
