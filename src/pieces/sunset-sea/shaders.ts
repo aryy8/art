@@ -150,7 +150,7 @@ void main() {
       float w2 = wfbm(vec2(x2 * 5.0, uv.y * 30.0) + 17.0) + 0.6 * (1.0 - v2 * v2) * smoothstep(0.2, 0.45, x2 - 0.0 * x) - 0.48;
       w2 = mix(-1.0, w2, step(abs(v2), 2.0));
       float dw = max(-w2 * 0.03, sheet);
-      col = wash(col, mix(ORANGE, SCARLET, 0.55), dw, 0.0008, 0.75, 1.5, 0.002, 1.1, uv);
+      col = wash(col, mix(CORAL, MAGENTA, 0.3), dw, mix(0.0008, 0.005, smoothstep(0.0, 0.3, gnoise(q * 12.0))), 0.7, 1.5, 0.002, 1.1, uv);
     }
     // salt / dropped-water flecks lift the pigment in little spots
     {
@@ -169,7 +169,7 @@ void main() {
       float cov = smoothstep(-0.25, 0.2, gnoise(vec2(x * 3.5, 9.0)));
       float c = wfbm(vec2(x * 3.0, uv.y * 40.0) + 13.0) + 0.55 * (1.0 - v * v) * cov - 0.45;
       float d = max(-c * 0.03, sheet);
-      col = wash(col, mix(CORAL, MAGENTA, 0.35 + 0.3 * gnoise(vec2(x * 5.0, 1.0))), d, 0.0008, 0.8, 1.5, 0.002, 1.0, uv);
+      col = wash(col, mix(CORAL, MAGENTA, 0.45 + 0.3 * gnoise(vec2(x * 5.0, 1.0))), d, 0.0008, 0.55, 1.5, 0.002, 1.0, uv);
     }
 
     // a coral cumulus low on the right, and a lilac one on the left near the horizon
