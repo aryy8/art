@@ -93,9 +93,12 @@ void main() {
   float dW = d + 0.007 * fbm(q * 18.0 + 2.0) + 0.0018 * gnoise(q * 140.0);
 
   // the painted area: a loose vignette that never reaches the sheet edge
-  vec2 bq = abs(q) - vec2(ASPECT * 0.5 - 0.085, 0.5 - 0.075);
-  float sheet = length(max(bq, 0.0)) + min(max(bq.x, bq.y), 0.0) - 0.04;
-  sheet += 0.05 * fbm(q * 3.5 + 3.0) + 0.016 * fbm(q * 24.0 + 1.0);
+  // the painted area is an organic, slightly tilted vignette — no rectangle anywhere
+  vec2 tq = mat2(0.99985, 0.0175, -0.0175, 0.99985) * q;
+  vec2 e = abs(tq) / vec2(ASPECT * 0.5 - 0.07, 0.5 - 0.06);
+  float sup = pow(pow(e.x, 2.6) + pow(e.y, 2.6), 1.0 / 2.6);
+  float sheet = (sup - 1.0) * 0.36;
+  sheet += 0.06 * fbm(q * 2.6 + 3.0) + 0.02 * fbm(q * 12.0 + 1.0) + 0.006 * gnoise(q * 60.0);
   // dry-brush: near the outer edge the brush skips over paper tooth
   float tooth = paperHeight(pp * 0.7);
   float dry = smoothstep(-0.05, 0.0, sheet) * (tooth - 0.45) * 0.05;
@@ -103,7 +106,7 @@ void main() {
 
   // ---------- land ----------
   float wetL = wfbm(q * 2.4 + 11.0);
-  col = wash(col, OCHRE, sheet, 0.004, 0.55 + 0.4 * wetL, 0.9, 0.02, 0.7, uv);
+  col = wash(col, OCHRE, sheet, mix(0.003, 0.03, smoothstep(0.0, 0.35, gnoise(q * 2.2 + 9.0))), 0.55 + 0.4 * wetL, 0.9, 0.02, 0.7, uv);
 
   // sap-green fields, wet-on-wet into the ochre
   float g = wfbm(q * 2.0 + vec2(4.0, -2.0));
@@ -147,12 +150,12 @@ void main() {
   }
 
   // trees overhanging the banks
-  col = tree(col, q, uv, vec2(-0.56, -0.30), 0.095, 1.0);
+  col = tree(col, q, uv, vec2(-0.52, -0.28), 0.095, 1.0);
   col = tree(col, q, uv, vec2(-0.43, -0.37), 0.065, 2.0);
-  col = tree(col, q, uv, vec2(0.58, -0.27), 0.08, 3.0);
+  col = tree(col, q, uv, vec2(0.54, -0.26), 0.08, 3.0);
   col = tree(col, q, uv, vec2(0.50, 0.33), 0.10, 4.0);
-  col = tree(col, q, uv, vec2(0.62, 0.20), 0.06, 5.0);
-  col = tree(col, q, uv, vec2(-0.55, 0.33), 0.075, 6.0);
+  col = tree(col, q, uv, vec2(0.58, 0.19), 0.06, 5.0);
+  col = tree(col, q, uv, vec2(-0.5, 0.31), 0.075, 6.0);
 
   // ---------- water ----------
   float inW = smoothstep(0.0025, -0.0025, dW);

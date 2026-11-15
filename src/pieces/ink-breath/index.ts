@@ -5,8 +5,6 @@ import type { MountPiece, PieceInstance } from "../types";
  * Plain Canvas2D, no WebGL: a single loop of ink that slowly breathes, leaving
  * fading ghosts of its earlier selves on the paper.
  */
-const PAPER = "#fbfaf7";
-
 function noise1(x: number) {
   // smooth 1D value noise from a few sines (deterministic, cheap)
   return Math.sin(x * 1.3 + 1.7) * 0.5 + Math.sin(x * 2.7 + 0.3) * 0.3 + Math.sin(x * 5.1 + 4.1) * 0.2;
@@ -15,15 +13,14 @@ function noise1(x: number) {
 const mount: MountPiece = (ctx) => {
   const canvas = document.createElement("canvas");
   ctx.el.appendChild(canvas);
-  const g = canvas.getContext("2d", { alpha: false })!;
+  const g = canvas.getContext("2d")!; // transparent: drawn straight onto the page's paper
   let ppu = 1;
   let slow = 0;
   let holding = false;
   let t = 0;
 
   const clear = () => {
-    g.fillStyle = PAPER;
-    g.fillRect(0, 0, canvas.width, canvas.height);
+    g.clearRect(0, 0, canvas.width, canvas.height);
   };
 
   const onDown = () => {
@@ -38,9 +35,10 @@ const mount: MountPiece = (ctx) => {
     const H = canvas.height;
     const s = Math.min(W, H);
     // the paper slowly forgets
-    g.globalCompositeOperation = "source-over";
-    g.fillStyle = "rgba(251,250,247,0.035)";
+    g.globalCompositeOperation = "destination-out";
+    g.fillStyle = "rgba(0,0,0,0.035)";
     g.fillRect(0, 0, W, H);
+    g.globalCompositeOperation = "source-over";
 
     const breath = Math.sin(t * 0.55) * 0.5 + 0.5;
     const R = s * (0.27 + 0.05 * breath);

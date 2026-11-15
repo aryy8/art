@@ -211,6 +211,11 @@ void main() {
   float ps = paperShade(pp);
   col *= 1.0 + ps * 0.10;
   col -= 0.012 * (1.0 - tooth) * (1.0 - dot(col, vec3(0.33)));
-  gl_FragColor = vec4(col, 1.0);
+
+  // "un-paint" the paper: output only the pigment, so the page itself is the paper.
+  // Over a paper-coloured page, premultiplied (P*(T-1+a), a) composites to exactly P*T.
+  vec3 T = clamp(col / PAPER, 0.0, 1.0);
+  float a = 1.0 - min(T.r, min(T.g, T.b));
+  gl_FragColor = vec4(PAPER * (T - 1.0 + a), a);
 }
 `;
