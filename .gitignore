@@ -3,3 +3,5 @@ dist
 reference/
 .DS_Store
 *.log
+shots/frames-*/
+shots/kayak-ref.mp4
