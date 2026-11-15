@@ -57,14 +57,25 @@ const float SUNX = ${SUN_X.toFixed(4)};
 
 vec3 base(vec2 uv) { return texture2D(uBase, vec2(uv.x, 1.0 - uv.y)).rgb; }
 
-// distance (in sheet-height units) inside a gently irregular rectangle
-float edgeDist(vec2 uv) {
-  float dl = uv.x * ASP, dr = (1.0 - uv.x) * ASP, dt = uv.y, db = 1.0 - uv.y;
-  float wl = 0.007 * fbm3(vec2(uv.y * 5.0, 1.0)) + 0.0022 * gnoise(vec2(uv.y * 38.0, 3.0));
-  float wr = 0.007 * fbm3(vec2(uv.y * 5.0, 7.0)) + 0.0022 * gnoise(vec2(uv.y * 41.0, 9.0));
-  float wt = 0.006 * fbm3(vec2(uv.x * 6.0, 13.0)) + 0.002 * gnoise(vec2(uv.x * 45.0, 15.0));
-  float wb = 0.007 * fbm3(vec2(uv.x * 6.0, 19.0)) + 0.0022 * gnoise(vec2(uv.x * 40.0, 21.0));
-  return min(min(dl + wl, dr + wr), min(dt + wt, db + wb)) - 0.011;
+// ---- the painted edge ----
+// Each side is where a wide brush stopped: a big, slow, asymmetric wander (the wash
+// reaches further in some places than others), a medium wobble and a little tooth.
+float sideOffset(float a, float seed) {
+  return 0.022 * fbm3(vec2(a * 1.7, seed)) + 0.0055 * fbm3(vec2(a * 8.0, seed + 3.1)) + 0.0014 * gnoise(vec2(a * 70.0, seed + 7.3));
+}
+float smin(float a, float b, float k) { float h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0); return mix(b, a, h) - k * h * (1.0 - h); }
+// e: distance inside the painted area (sheet-height units); a: position along the nearest side
+float edgeField(vec2 uv, out float a, out float side) {
+  float y = uv.y, x = uv.x * ASP;
+  float dl = x + sideOffset(y, 1.0) - 0.024;
+  float dr = (ASP - x) + sideOffset(y, 11.0) - 0.020 - 0.006 * smoothstep(0.35, 0.8, y);
+  float dt = y + sideOffset(x, 21.0) - 0.020;
+  float db = (1.0 - y) + sideOffset(x, 31.0) - 0.026;
+  float e = smin(smin(dl, dr, 0.012), smin(dt, db, 0.012), 0.012);
+  float m = min(min(dl, dr), min(dt, db));
+  side = m == dl ? 0.0 : m == dr ? 1.0 : m == dt ? 2.0 : 3.0;
+  a = side < 2.0 ? y : x;
+  return e;
 }
 
 void main() {
@@ -126,10 +137,46 @@ void main() {
     col *= mix(vec3(1.0), vec3(0.86, 0.84, 0.95), clamp(-sh, 0.0, 1.0) * 0.5);
   }
 
-  // hand-cut sheet edge: soft but irregular, with pigment dried darker along it
-  float e = edgeDist(uv);
-  float m = smoothstep(-0.0015, 0.0035, e);
-  col *= mix(1.0, 0.93, exp(-max(e, 0.0) / 0.004) * m);
-  gl_FragColor = vec4(clamp(col, 0.0, 1.0) * m, m);
+  // ---- painted edge: wet bleeds, hard dried rims, dry-brush breaks, small blooms ----
+  float along, side;
+  float e = edgeField(uv, along, side);
+  float sd = side * 17.0;
+  // some stretches dried with a hard edge, others bled softly into the damp paper
+  float hard = smoothstep(-0.15, 0.25, gnoise(vec2(along * 3.2, sd + 2.0)) + 0.1 * gnoise(vec2(along * 11.0, sd)));
+  float feather = mix(0.009, 0.0018, hard);
+  // blooms / backruns: where the bleed was wettest, pigment pushed out in scalloped lobes
+  float wet = 1.0 - hard;
+  float lobes = fbm3(uv * vec2(ASP, 1.0) * 55.0 + sd);
+  float bloom = wet * smoothstep(0.05, 0.35, gnoise(vec2(along * 6.0, sd + 9.0))) * (0.004 + 0.004 * lobes);
+  float ee = e + bloom;
+  // where it bled, pigment crept into the damp paper in fine, branching fingers rather
+  // than a smooth blur: threshold the ramp against fractal noise
+  vec2 pq = uv * vec2(ASP, 1.0);
+  float frac = fbm3(pq * 160.0 + sd) * 0.7 + gnoise(pq * 520.0 + sd) * 0.3;
+  float ramp = (ee + feather * 0.2) / feather;
+  float cov = smoothstep(0.42, 0.58, ramp + frac * 1.1 * wet + frac * 0.25 * hard);
+  // and it is paler out there: pigment thins as it travels
+  float thin = smoothstep(1.3, 0.2, ramp) * wet;
+  cov *= 1.0 - thin * (0.45 + 0.25 * gnoise(pq * 300.0));
+  float fade = thin;
+  // dry brush: on the sides the horizontal strokes run out in broken streaks, both little
+  // gaps just inside and a few bristle trails beyond, only along some stretches
+  float streak = gnoise(vec2(uv.x * ASP * 14.0, uv.y * 340.0) + sd) + 0.5 * gnoise(vec2(uv.x * ASP * 40.0, uv.y * 900.0) + sd);
+  float drySeg = smoothstep(0.1, 0.45, gnoise(vec2(along * 4.5, sd + 33.0))) * (side < 2.0 ? 1.0 : 0.45);
+  float band = smoothstep(-0.022, -0.002, e) * (1.0 - smoothstep(0.004, 0.02, e));
+  float bristle = smoothstep(0.28, 0.5, streak) * drySeg * band;
+  float breaks = smoothstep(0.32, 0.55, -streak) * drySeg * smoothstep(0.0, 0.006, e) * (1.0 - smoothstep(0.006, 0.02, e));
+  cov = max(cov, bristle * (0.55 + 0.35 * hard) * smoothstep(-0.022, -0.004, e));
+  cov *= 1.0 - breaks * 0.9;
+  // pigment pools and dries darker along the boundary, unevenly
+  float rimK = (0.35 + 0.65 * hard) * (0.55 + 0.45 * gnoise(vec2(along * 9.0, sd + 50.0)) + 0.25);
+  float rim = exp(-max(ee, 0.0) / mix(0.006, 0.0028, hard)) * smoothstep(0.0, feather * 0.6, ee) * rimK;
+  col = mix(col, col * col * 1.05, clamp(rim, 0.0, 1.0) * 0.7);
+  // a dark tide line where the bleed stopped drying
+  float tide = smoothstep(0.35, 0.6, cov) * (1.0 - smoothstep(0.65, 0.95, cov)) * wet;
+  col = mix(col, col * col, tide * 0.5);
+  // wet bleed lightens the very edge a touch, like pigment thinning into water
+  col = mix(col, mix(col, vec3(1.0), 0.18), fade * wet * 0.6);
+  gl_FragColor = vec4(clamp(col, 0.0, 1.0) * cov, cov);
 }
 `;
