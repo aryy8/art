@@ -32,4 +32,16 @@ export const pieces: PieceDefinition[] = [
     maxResolution: 2,
     load: () => import("./pixel-sea"),
   },
+  {
+    slug: "ascii-wing",
+    title: "ASCII wing",
+    date: "Nov 2026",
+    // Nearby but off-axis, with more white page from sunset
+    x: -1180,
+    y: 1100,
+    width: 1000,
+    height: 500,
+    maxResolution: 1.5,
+    load: () => import("./ascii-wing"),
+  },
 ];
