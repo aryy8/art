@@ -20,4 +20,16 @@ export const pieces: PieceDefinition[] = [
     maxResolution: 1.8,
     load: () => import("./sunset-sea"),
   },
+  {
+    slug: "pixel-sea",
+    title: "Pixel sea",
+    date: "Nov 2026",
+    // Further right of sunset-sea, with more white page between them
+    x: 1400,
+    y: 280,
+    width: 700,
+    height: 700,
+    maxResolution: 2,
+    load: () => import("./pixel-sea"),
+  },
 ];
