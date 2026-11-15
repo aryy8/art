@@ -57,8 +57,15 @@ export class Camera {
     return now - this.lastChange;
   }
 
+  /** changes whenever the view changes */
+  get stamp() {
+    return this.version;
+  }
+  private version = 0;
+
   touch(now = performance.now()) {
     this.lastChange = now;
+    this.version++;
   }
 
   stop() {
@@ -184,7 +191,10 @@ export class Camera {
       if (Math.hypot(this.vx, this.vy) < 0.012) this.vx = this.vy = 0;
       changed = true;
     }
-    if (changed) this.lastChange = now;
+    if (changed) {
+      this.lastChange = now;
+      this.version++;
+    }
     return changed;
   }
 }

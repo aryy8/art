@@ -41,6 +41,7 @@ export class App {
   private interacted = false;
   private focusWheel = 0;
   private hudText = "";
+  private appliedStamp = NaN;
 
   constructor(mount: HTMLElement, private defs: PieceDefinition[]) {
     this.reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -82,6 +83,7 @@ export class App {
 
     this.onResize();
     this.camera.view = this.homeView();
+    this.camera.touch();
     window.addEventListener("resize", () => this.onResize());
     this.watchDpr();
 
@@ -496,7 +498,12 @@ export class App {
   private loop = (now: number) => {
     const dt = Math.min(64, now - this.lastFrame);
     this.lastFrame = now;
-    if (this.camera.update(now, dt)) this.applyView();
+    const moved = this.camera.update(now, dt);
+    const stamp = this.camera.stamp;
+    if (moved || stamp !== this.appliedStamp) {
+      this.appliedStamp = stamp;
+      this.applyView();
+    }
     this.updatePieces(now, dt / 1000);
     requestAnimationFrame(this.loop);
   };
