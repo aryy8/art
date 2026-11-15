@@ -404,11 +404,11 @@ void main() {
       float gs = gl.y - YH;
       if (gs <= 0.0) continue;
       float grh = rowHeight(gs);
-      vec2 d2 = vec2((q.x - gl.x) / gl.w, (uv.y - gl.y) / (grh * 0.32));
+      vec2 d2 = vec2((q.x - gl.x) / (gl.w * 2.4), (uv.y - gl.y) / (grh * 0.16));
       float a = smoothstep(0.0, 0.08, gl.z) * (1.0 - smoothstep(0.45, 1.0, gl.z));
-      float r = length(d2) + (tooth - 0.5) * 0.25;
+      float r = length(vec2(pow(abs(d2.x), 1.6), d2.y)) + (tooth - 0.5) * 0.3;
       float sp = smoothstep(1.0, 0.86, r);
-      float halo = smoothstep(2.6, 0.9, length(d2 * vec2(0.8, 0.6)));
+      float halo = smoothstep(2.4, 0.9, length(d2 * vec2(0.7, 0.3)));
       col *= pow(CORAL, vec3(halo * a * 0.35));
       col = mix(col, PAPER_C, sp * a * 0.95);
     }
@@ -418,7 +418,7 @@ void main() {
     float lift = smoothstep(0.08, 0.3, shade) * edgeMask;
     float pool = smoothstep(0.08, 0.32, -shade) * edgeMask;
     col = mix(col, mix(PAPER_C, PEACH, 0.3), lift * 0.7);
-    col *= pow(VIOLET * DEEP, vec3(pool * 0.45));
+    col *= pow(VIOLET, vec3(pool * 0.35));
   }
 
   // paper relief over everything
