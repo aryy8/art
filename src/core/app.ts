@@ -1,5 +1,4 @@
 import { Camera, type View } from "./camera";
-import { makeGrainDataURL } from "./grain";
 import type { PieceDefinition, PieceInstance, PieceContext } from "../pieces/types";
 
 interface PieceState {
@@ -16,17 +15,10 @@ interface PieceState {
 }
 
 const CLICK_SLOP = 6;
-const pad2 = (n: number) => String(n).padStart(2, "0");
 
 export class App {
   private root: HTMLElement;
   private world: HTMLElement;
-  private grainA: HTMLElement;
-  private grainB: HTMLElement;
-  private hud: HTMLElement;
-  private hint: HTMLElement;
-  private focusBar: HTMLElement;
-  private indexPanel: HTMLElement;
   private camera: Camera;
   private states: PieceState[] = [];
   private focused: PieceState | null = null;
@@ -38,9 +30,7 @@ export class App {
   private velocity: { x: number; y: number; t: number }[] = [];
   private pinch: { dist: number; mid: { x: number; y: number } } | null = null;
   private dragging = false;
-  private interacted = false;
   private focusWheel = 0;
-  private hudText = "";
   private appliedStamp = NaN;
 
   constructor(mount: HTMLElement, private defs: PieceDefinition[]) {
@@ -49,36 +39,13 @@ export class App {
     this.root = mount;
     this.root.classList.add("art-root");
     this.root.innerHTML = `
-      <div class="grain grain-a"></div>
-      <div class="grain grain-b"></div>
       <div class="world"></div>
-      <header class="wordmark" aria-label="art"><a href="#" data-home>art</a><span class="by">by Aryan Rastogi</span></header>
-      <div class="focusbar" aria-live="polite">
-        <div class="fb-meta"><span class="fb-num"></span><span class="fb-title"></span><span class="fb-date"></span></div>
-        <button class="fb-close" aria-label="Back to canvas"><span>esc</span> back to canvas</button>
-      </div>
-      <nav class="dock">
-        <span class="hud" aria-hidden="true"></span>
-        <button class="dock-btn" data-index aria-expanded="false">index</button>
-        <button class="dock-btn" data-home title="Back to overview (0)">overview</button>
-      </nav>
-      <div class="index-panel" role="dialog" aria-label="Index of pieces"><ol></ol></div>
-      <p class="hint"><span class="hint-wide">drag to wander &nbsp;·&nbsp; scroll or pinch to zoom &nbsp;·&nbsp; click a piece to step inside</span><span class="hint-touch">drag &nbsp;·&nbsp; pinch &nbsp;·&nbsp; tap a piece</span></p>
+      <h1 class="title"><a href="#" data-home>Art</a></h1>
+      <button class="close" aria-label="Back to the canvas"></button>
     `;
     this.world = this.root.querySelector(".world")!;
-    this.grainA = this.root.querySelector(".grain-a")!;
-    this.grainB = this.root.querySelector(".grain-b")!;
-    this.hud = this.root.querySelector(".hud")!;
-    this.hint = this.root.querySelector(".hint")!;
-    this.focusBar = this.root.querySelector(".focusbar")!;
-    this.indexPanel = this.root.querySelector(".index-panel")!;
-
-    const grain = `url(${makeGrainDataURL(256)})`;
-    this.grainA.style.backgroundImage = grain;
-    this.grainB.style.backgroundImage = grain;
 
     this.buildPieces();
-    this.buildIndex();
     this.bindInput();
 
     this.onResize();
@@ -100,24 +67,15 @@ export class App {
   // ---------- setup ----------
 
   private buildPieces() {
-    this.defs.forEach((def, i) => {
+    this.defs.forEach((def) => {
       const el = document.createElement("article");
       el.className = "piece";
       el.dataset.slug = def.slug;
       el.style.transform = `translate(${def.x}px, ${def.y}px)`;
       el.style.width = `${def.width}px`;
       el.style.height = `${def.height}px`;
-      el.innerHTML = `
-        <div class="piece-surface" tabindex="-1"></div>
-        <div class="caption">
-          <span class="cap-num">${pad2(i + 1)}</span>
-          <h2 class="cap-title"></h2>
-          <span class="cap-date"></span>
-          ${def.description ? `<p class="cap-desc"></p>` : ""}
-        </div>`;
-      el.querySelector(".cap-title")!.textContent = def.title;
-      el.querySelector(".cap-date")!.textContent = def.date;
-      if (def.description) el.querySelector(".cap-desc")!.textContent = def.description;
+      el.setAttribute("aria-label", def.title);
+      el.innerHTML = `<div class="piece-surface" tabindex="-1"></div>`;
       this.world.appendChild(el);
       this.states.push({
         def,
@@ -132,27 +90,6 @@ export class App {
         mountedAt: 0,
       });
     });
-  }
-
-  private buildIndex() {
-    const ol = this.indexPanel.querySelector("ol")!;
-    this.states.forEach((st, i) => {
-      const li = document.createElement("li");
-      li.innerHTML = `<button><span class="ix-num">${pad2(i + 1)}</span><span class="ix-title"></span><span class="ix-date"></span></button>`;
-      li.querySelector(".ix-title")!.textContent = st.def.title;
-      li.querySelector(".ix-date")!.textContent = st.def.date;
-      li.querySelector("button")!.addEventListener("click", () => {
-        this.toggleIndex(false);
-        this.focus(st);
-      });
-      ol.appendChild(li);
-    });
-  }
-
-  private toggleIndex(open?: boolean) {
-    const next = open ?? !this.root.classList.contains("index-open");
-    this.root.classList.toggle("index-open", next);
-    this.root.querySelector("[data-index]")!.setAttribute("aria-expanded", String(next));
   }
 
   private watchDpr() {
@@ -180,29 +117,14 @@ export class App {
   private insets() {
     const w = window.innerWidth;
     const small = w < 700;
-    return { top: small ? 64 : 84, bottom: small ? 72 : 84, side: small ? 14 : 56 };
+    return { top: small ? 70 : 92, bottom: small ? 40 : 64, side: small ? 18 : 64 };
   }
 
+  /** Open on the headline piece at a comfortable size; the others wait further out on the page. */
   private homeView(): View {
-    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    for (const d of this.defs) {
-      x0 = Math.min(x0, d.x);
-      y0 = Math.min(y0, d.y);
-      x1 = Math.max(x1, d.x + d.width);
-      y1 = Math.max(y1, d.y + d.height + 150);
-    }
-    const W = window.innerWidth, H = window.innerHeight;
-    const ins = this.insets();
-    const s = Math.min((W - ins.side * 2) / (x1 - x0), (H - ins.top - ins.bottom) / (y1 - y0));
-    const all = { cx: (x0 + x1) / 2, cy: (y0 + y1) / 2 - (ins.top - ins.bottom) / 2 / s, s: s * 0.92 };
-    // on narrow screens everything at once is too small: open on the headline piece,
-    // with its neighbours peeking in from the sides as an invitation to wander
-    if (s < 0.3 && W < 760) {
-      const head = this.defs.find((d) => d.slug === "sunset-sea") ?? this.defs[0];
-      const v = this.fitView(head);
-      return { ...v, s: v.s * 0.82 };
-    }
-    return all;
+    const head = this.defs.find((d) => d.slug === "sunset-sea") ?? this.defs[0];
+    const v = this.fitView(head);
+    return { ...v, s: v.s * 0.88 };
   }
 
   private fitView(d: PieceDefinition): View {
@@ -227,12 +149,7 @@ export class App {
     this.focused = st;
     this.setFocusedState(st, true);
     this.root.classList.add("is-focused");
-    const i = this.states.indexOf(st);
-    this.focusBar.querySelector(".fb-num")!.textContent = pad2(i + 1);
-    this.focusBar.querySelector(".fb-title")!.textContent = st.def.title;
-    this.focusBar.querySelector(".fb-date")!.textContent = st.def.date;
     history.replaceState(null, "", `#${st.def.slug}`);
-    this.dismissHint();
     const target = this.fitView(st.def);
     if (instant) {
       this.camera.view = target;
@@ -261,12 +178,6 @@ export class App {
     st.el.classList.toggle("is-focused", on);
     st.instance?.setFocused?.(on);
     if (on) st.surface.focus({ preventScroll: true });
-  }
-
-  private dismissHint() {
-    if (this.interacted) return;
-    this.interacted = true;
-    this.hint.classList.add("gone");
   }
 
   // ---------- input ----------
@@ -300,32 +211,28 @@ export class App {
       if (this.focused) return;
       this.camera.zoomAt(e.scale / gScale, e.clientX, e.clientY);
       gScale = e.scale;
-      this.dismissHint();
     }) as EventListener);
 
     window.addEventListener("keydown", (e) => this.onKey(e));
     r.querySelectorAll("[data-home]").forEach((b) =>
       b.addEventListener("click", (e) => {
         e.preventDefault();
-        this.toggleIndex(false);
         this.goHome();
       }),
     );
-    r.querySelector("[data-index]")!.addEventListener("click", () => this.toggleIndex());
-    r.querySelector(".fb-close")!.addEventListener("click", () => this.unfocus());
+    r.querySelector(".close")!.addEventListener("click", () => this.unfocus());
     r.addEventListener("contextmenu", (e) => {
       if (this.insideFocused(e.target)) e.preventDefault();
     });
   }
 
   private isUi(t: EventTarget | null) {
-    return !!(t as HTMLElement | null)?.closest?.(".dock, .wordmark, .focusbar, .index-panel");
+    return !!(t as HTMLElement | null)?.closest?.(".title, .close");
   }
 
   private onDown(e: PointerEvent) {
     if (this.isUi(e.target)) return;
     if (e.button !== 0 && e.pointerType === "mouse") return;
-    if (this.root.classList.contains("index-open")) this.toggleIndex(false);
     if (this.insideFocused(e.target) && this.pointers.size === 0) return; // the piece owns this gesture
     this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY, t: performance.now() });
     this.camera.stop();
@@ -347,7 +254,6 @@ export class App {
     if (!this.dragging && Math.hypot(p.x - p.sx, p.y - p.sy) > CLICK_SLOP) {
       this.dragging = true;
       this.root.classList.add("is-dragging");
-      this.dismissHint();
       if (this.focused) this.unfocus(false); // user took the wheel
     }
     if (!this.dragging) return;
@@ -403,9 +309,8 @@ export class App {
   }
 
   private onWheel(e: WheelEvent) {
-    if (this.isUi(e.target) && !(e.target as HTMLElement).closest(".dock")) return;
+    if (this.isUi(e.target)) return;
     e.preventDefault();
-    this.dismissHint();
     if (this.focused) {
       // in focus the wheel belongs to the piece; a firm zoom-out gesture steps back
       const out = e.ctrlKey ? e.deltaY > 0 : e.deltaY > 0 && e.deltaMode !== 0;
@@ -439,14 +344,10 @@ export class App {
     const W = window.innerWidth, H = window.innerHeight;
     switch (e.key) {
       case "Escape":
-        if (this.root.classList.contains("index-open")) this.toggleIndex(false);
-        else this.unfocus();
+        this.unfocus();
         break;
       case "0":
         this.goHome();
-        break;
-      case "i":
-        this.toggleIndex();
         break;
       case "+":
       case "=":
@@ -471,7 +372,6 @@ export class App {
       default:
         return;
     }
-    this.dismissHint();
   }
 
   // ---------- frame ----------
@@ -484,23 +384,6 @@ export class App {
     this.world.style.transform = `translate3d(${tx}px, ${ty}px, 0) scale(${s})`;
     this.root.style.setProperty("--s", String(s));
 
-    // grain: two octaves cross-faded so it never visibly scales
-    const l = Math.log2(Math.max(s, 1e-3));
-    const f = l - Math.floor(l);
-    const base = 256 * Math.pow(2, f) * 0.5; // 128..256 css px
-    const setGrain = (el: HTMLElement, size: number, op: number) => {
-      el.style.backgroundSize = `${size}px ${size}px`;
-      el.style.backgroundPosition = `${((tx % size) + size) % size}px ${((ty % size) + size) % size}px`;
-      el.style.opacity = op.toFixed(3);
-    };
-    setGrain(this.grainA, base, 1 - f);
-    setGrain(this.grainB, base * 2, f);
-
-    const text = `${Math.round(cx)}, ${Math.round(cy)}  ·  ${Math.round(s * 100)}%`;
-    if (text !== this.hudText) {
-      this.hudText = text;
-      this.hud.textContent = text;
-    }
   }
 
   private loop = (now: number) => {
