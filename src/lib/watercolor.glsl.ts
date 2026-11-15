@@ -93,3 +93,37 @@ vec3 wash(vec3 col, vec3 pigment, float d, float soft, float dens, float edge, f
 `;
 
 export const WC_ALL = NOISE + PAPER + WASH;
+
+/**
+ * The painted area's edge: no frame, no rectangle. A slightly tilted, organic shape whose
+ * border is deckled at several scales, broken by dry-brush skips over the paper tooth,
+ * and in places bleeds softly into dry paper. Returns alpha; `rim` (0..1) is where
+ * pigment pools at the drying edge, so callers can darken it a touch.
+ * Needs NOISE + PAPER. uv is 0..1 (y down), aspect = width/height.
+ */
+export const EDGE = /* glsl */ `
+float deckle(vec2 uv, float aspect, float seed, float inset, float tooth, out float rim) {
+  vec2 p = (uv - 0.5) * vec2(aspect, 1.0);
+  float tilt = 0.012 * sin(seed * 3.7);
+  p = mat2(cos(tilt), -sin(tilt), sin(tilt), cos(tilt)) * p;
+  vec2 hb = vec2(aspect * 0.5, 0.5) - inset;
+  // a little barrel so no side is a ruler-straight line
+  hb += 0.008 * vec2(1.0 - pow(p.y / 0.5, 2.0), 1.0 - pow(p.x / (aspect * 0.5), 2.0));
+  vec2 b = abs(p) - hb + 0.015;
+  float d = length(max(b, 0.0)) + min(max(b.x, b.y), 0.0) - 0.015;
+  // big, slow irregularity, then deckle at finer scales
+  d += 0.028 * fbm(p * 2.2 + seed) + 0.009 * fbm(p * 11.0 + seed * 2.0) + 0.0025 * gnoise(p * 95.0 + seed);
+  // horizontal brush ends on the left/right sides: each stroke stops at its own place
+  float side = smoothstep(hb.x - 0.08, hb.x, abs(p.x));
+  d += side * 0.016 * gnoise(vec2(p.y * 70.0, seed + sign(p.x) * 3.0));
+  // dry brush: near the edge the brush skips over the paper tooth, leaving white flecks
+  float nearEdge = smoothstep(-0.035, 0.0, d);
+  d += nearEdge * (tooth - 0.48) * 0.022 * (0.6 + 0.6 * gnoise(p * vec2(5.0, 28.0) + seed));
+  float hard = smoothstep(0.0012, -0.0012, d);
+  float softE = smoothstep(0.014, -0.012, d);
+  float bleed = smoothstep(0.05, 0.35, gnoise(p * 2.6 + seed * 5.0));
+  float m = mix(hard, softE, bleed);
+  rim = exp(-max(-d, 0.0) / 0.007) * hard * (1.0 - 0.7 * bleed);
+  return m;
+}
+`;

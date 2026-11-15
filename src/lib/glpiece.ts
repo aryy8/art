@@ -10,19 +10,20 @@ export class GLSurface {
   width = 1;
   height = 1;
 
-  constructor(host: HTMLElement, clear = 0xfbfaf7) {
+  constructor(host: HTMLElement) {
     this.canvas = document.createElement("canvas");
     host.appendChild(this.canvas);
     this.renderer = new THREE.WebGLRenderer({
       canvas: this.canvas,
       antialias: false,
-      alpha: false,
+      alpha: true,
+      premultipliedAlpha: true,
       powerPreference: "high-performance",
       preserveDrawingBuffer: false,
     });
     this.renderer.setPixelRatio(1);
     this.renderer.outputColorSpace = THREE.LinearSRGBColorSpace; // shaders write display values directly
-    this.renderer.setClearColor(clear, 1);
+    this.renderer.setClearColor(0x000000, 0); // transparent: the page's paper shows through
     this.renderer.autoClear = false;
     this.quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2));
     this.quad.frustumCulled = false;
@@ -39,6 +40,7 @@ export class GLSurface {
   draw(material: THREE.Material, target: THREE.WebGLRenderTarget | null) {
     this.quad.material = material;
     this.renderer.setRenderTarget(target);
+    if (!target) this.renderer.clear();
     this.renderer.render(this.scene, this.camera);
   }
 
