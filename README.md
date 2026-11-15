@@ -1,10 +1,11 @@
 # art
 
-A quiet, infinite, paper-white canvas for pieces made with code — by Aryan Rastogi.
+A quiet, infinite, pure-white canvas for pieces made with code — by Aryan Rastogi.
 
 Pan by dragging (or two-finger scroll on a trackpad), zoom with the wheel or a pinch,
 and click a piece to step inside it. `Esc`, a click on the paper, or a firm zoom-out
-steps back. `0` returns to the overview, `i` opens the index, arrow keys drift.
+steps back. `0` returns to the opening view, arrow keys drift. The only chrome is the
+"Art" title and a small close mark while a piece is focused.
 
 ```bash
 npm install
@@ -29,14 +30,13 @@ On **Cloudflare Pages** use the same build command and `dist` as the output dire
 - `src/core/app.ts` — the shell: input (mouse, trackpad, touch, Safari gestures, keyboard), focus mode,
   lazy-mounting pieces as they come near, pausing them offscreen, and re-rendering them at the
   resolution the current zoom needs (DPR aware).
-- `src/core/grain.ts` — a procedural tileable paper grain, laid over everything in two cross-faded
-  octaves so it never visibly scales.
 - `src/lib/watercolor.glsl.ts` — shared GLSL: noise/fbm, paper height, Beer–Lambert glazes with edge
   darkening and granulation, and `deckle()`, the hand-painted edge.
+- `src/lib/brush.ts` — a Canvas2D watercolour painter (glazes, dried rims, granulation, varied brush
+  strokes) for painting a static base once at load.
 - `src/lib/glpiece.ts` — a transparent Three.js surface, fullscreen-quad drawing and float ping-pong targets.
 
-Pieces render onto transparent canvases and only output pigment, so the page itself is the paper:
-there are no frames, cards or shadows, and the grain runs continuously across the canvas and the pieces.
+Pieces render onto transparent canvases straight onto the white page: no frames, cards or shadows.
 
 ## Adding a piece
 
@@ -65,7 +65,7 @@ there are no frames, cards or shadows, and the grain runs continuously across th
 2. Register it in `src/pieces/index.ts` with a world position, size, title and date:
 
    ```ts
-   { slug: "my-piece", title: "My piece", date: "Dec 2026", description: "…",
+   { slug: "my-piece", title: "My piece", date: "Dec 2026",
      x: 1500, y: 0, width: 600, height: 600, load: () => import("./my-piece") },
    ```
 
@@ -77,15 +77,16 @@ interaction when `ctx.isFocused()` is true (otherwise the click is the shell's, 
 
 ## The pieces
 
-- **Pond, early morning** (`src/pieces/pond`) — a procedural watercolour (washes with granulation, edge
-  darkening, wet-on-wet blooms, reeds, lily pads, pen contours) painted once into a texture, brought to
+- **Pond, early morning** (`src/pieces/pond`) — a few large hard-edged washes painted once at load
+  (`paint.ts`, light to dark, no ink lines), brought to
   life by a GPU ping-pong height-field ripple simulation that refracts the pigment, lifts it on crests
   and pools it in troughs. A kayak paddles a loop and a duck family drifts, shies from the cursor and
   leaves wakes. Inspired by the feel of kayak.whimsy.land; all code and visuals are original.
-- **Sunset sea** (`src/pieces/sunset-sea`) — wet-on-wet sky with drifting cumulus (hard drying edges,
-  soft tops, salt flecks), a bare-paper sun, a sea of perspective rows of horizontal brush strokes that
-  swell and slide, warm reflections, and a broken, twinkling sun path. Move across the water to scatter
-  glints; tap for ripples. The sky repaints every few frames, the sea every frame.
+- **Sunset sea** (`src/pieces/sunset-sea`) — Aryan's own watercolour (`sunset.webp`) brought to life
+  the way kayak.whimsy.land animates its painting: below the horizon the painting is sampled through
+  perspective swells (smaller and slower toward the horizon), the sun path shimmers on the facing
+  slopes, and a GPU ripple sim lets the pointer bend the paint. The sky only breathes, and a soft
+  irregular mask gives the sheet a hand-cut edge. (The earlier fully procedural version is in git history.)
 - **Ink, breathing** (`src/pieces/ink-breath`) — a tiny Canvas2D study proving the system.
 
 `prefers-reduced-motion` slows everything to a near-stillness (pieces still respond to you), camera
