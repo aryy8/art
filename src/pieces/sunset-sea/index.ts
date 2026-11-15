@@ -84,7 +84,7 @@ const mount: MountPiece = (ctx): PieceInstance => {
       const steps = Math.min(4, Math.ceil(len / 0.012));
       for (let i = 1; i <= steps; i++) {
         const k = i / steps;
-        addDrop({ x: last.x + (u.x - last.x) * k, y: last.y + (u.y - last.y) * k }, 0.035, Math.min(0.035, len * 0.5) / steps);
+        addDrop({ x: last.x + (u.x - last.x) * k, y: last.y + (u.y - last.y) * k }, 0.04, (0.04 + Math.min(0.06, len * 4)) / steps);
       }
     }
     last = u;
@@ -92,7 +92,7 @@ const mount: MountPiece = (ctx): PieceInstance => {
   const onLeave = () => (last = null);
   const onDown = (e: PointerEvent) => {
     if (!ctx.isFocused()) return;
-    addDrop(ctx.toLocal(e), 0.06, 0.22);
+    addDrop(ctx.toLocal(e), 0.06, 0.45);
   };
   ctx.el.addEventListener("pointermove", onMove);
   ctx.el.addEventListener("pointerleave", onLeave);

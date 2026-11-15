@@ -88,8 +88,8 @@ void main() {
     float hx = texture2D(uSim, st + vec2(uSimTexel.x, 0.0)).r - texture2D(uSim, st - vec2(uSimTexel.x, 0.0)).r;
     float hy = texture2D(uSim, st - vec2(0.0, uSimTexel.y)).r - texture2D(uSim, st + vec2(0.0, uSimTexel.y)).r;
     simD = vec2(hx, hy);
-    d += vec2(hx * 0.018, hy * 0.03) * (0.4 + ss);
-    sh = hy * 3.0 + hx * 0.6;
+    d += vec2(hx * 0.22, hy * 0.36) * (0.4 + ss);
+    sh = (hy * 22.0 + hx * 5.0) * (0.5 + ss);
   } else {
     // the sky barely breathes: still-wet washes
     float k = smoothstep(0.0, -0.05, s);
@@ -112,7 +112,7 @@ void main() {
     float tw = smoothstep(0.25, 0.75, beat * 0.6 + face * 0.6);
     col = mix(col, vec3(1.0, 0.985, 0.97), gl.a * tw * 0.96);
     // ripple light: facing slopes lift toward paper, the others pool a little pigment
-    col = mix(col, vec3(1.0, 0.97, 0.95), clamp(sh, 0.0, 1.0) * 0.55);
+    col = mix(col, vec3(1.0, 0.97, 0.95), clamp(sh, 0.0, 1.0) * 0.3);
     col *= mix(vec3(1.0), vec3(0.86, 0.84, 0.95), clamp(-sh, 0.0, 1.0) * 0.6);
   }
 
