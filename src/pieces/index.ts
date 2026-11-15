@@ -44,4 +44,16 @@ export const pieces: PieceDefinition[] = [
     maxResolution: 1.5,
     load: () => import("./ascii-wing"),
   },
+  {
+    slug: "snoopy",
+    title: "Sleeping Snoopy",
+    date: "Nov 2026",
+    // Above-right of sunset, not aligned with pixel-sea or ascii-wing
+    x: 680,
+    y: -1180,
+    width: 1040,
+    height: 800,
+    maxResolution: 2,
+    load: () => import("./snoopy"),
+  },
 ];
