@@ -1,33 +1,38 @@
 import * as THREE from "three";
 import type { MountPiece, PieceInstance } from "../types";
 import { FULLSCREEN_VERT, GLSurface, PingPong } from "../../lib/glpiece";
-import { ASP, COMPOSITE_FRAG, HORIZON, MAX_DROPS, MAX_GLINTS, PAINT_FRAG, SIM_FRAG } from "./shaders";
+import { COMPOSITE_FRAG, HORIZON, MAX_DROPS, SIM_FRAG } from "./shaders";
+import { paintSunset } from "./paint";
 
 /**
  * Sunset sea.
- * A wet-on-wet sky whose clouds drift, a sea built from horizontal brush strokes that
- * swell and slide, and a sun path of broken, twinkling lifts of bare paper.
- * Move across the water to scatter glints; tap for a ripple.
+ * Painted once at load (sky glazes, clouds, the sea in perspective rows of strokes),
+ * then sampled every frame through a moving water surface: swells roll the strokes,
+ * glints twinkle down the sun path, and the pointer leaves ripples that bend the paint.
  */
 
 const SIM_W = 200;
 const SIM_H = 300;
-const SKY_EVERY = 3; // re-paint the slow sky every N frames
+const BASE_W = 1200;
+const BASE_H = 2120;
 
 const mount: MountPiece = (ctx): PieceInstance => {
   const gl = new GLSurface(ctx.el);
-  const motion = ctx.reducedMotion ? 0.2 : 1;
+  const t0 = performance.now();
+  const { base, glints } = paintSunset(BASE_W, BASE_H);
+  if (location.search.includes("debug")) console.warn("sunset painted in", Math.round(performance.now() - t0), "ms");
+  const texOf = (c: HTMLCanvasElement, mip: boolean) => {
+    const t = new THREE.CanvasTexture(c);
+    t.colorSpace = THREE.NoColorSpace;
+    t.minFilter = mip ? THREE.LinearMipmapLinearFilter : THREE.LinearFilter;
+    t.magFilter = THREE.LinearFilter;
+    t.generateMipmaps = mip;
+    t.anisotropy = 4;
+    return t;
+  };
+  const baseTex = texOf(base, true);
+  const glintTex = texOf(glints, true);
 
-  const paintMat = new THREE.ShaderMaterial({
-    vertexShader: FULLSCREEN_VERT,
-    fragmentShader: PAINT_FRAG,
-    uniforms: {
-      uPaperScale: { value: new THREE.Vector2(ctx.width, ctx.height) },
-      uTime: { value: 0 },
-    },
-    depthTest: false,
-    depthWrite: false,
-  });
   const sim = new PingPong(SIM_W, SIM_H);
   const drops = Array.from({ length: MAX_DROPS }, () => new THREE.Vector4());
   const simMat = new THREE.ShaderMaterial({
@@ -36,54 +41,37 @@ const mount: MountPiece = (ctx): PieceInstance => {
     uniforms: {
       uState: { value: sim.a.texture },
       uTexel: { value: new THREE.Vector2(1 / SIM_W, 1 / SIM_H) },
-      uDamping: { value: ctx.reducedMotion ? 0.97 : 0.984 },
+      uDamping: { value: ctx.reducedMotion ? 0.97 : 0.988 },
       uDrops: { value: drops },
       uDropCount: { value: 0 },
     },
     depthTest: false,
     depthWrite: false,
   });
-  const glints = Array.from({ length: MAX_GLINTS }, () => new THREE.Vector4(0, 0, 0, 0.01));
-  const glintBirth = new Float32Array(MAX_GLINTS).fill(-99);
-  const glintLife = new Float32Array(MAX_GLINTS).fill(1);
-  let glintNext = 0;
   const compMat = new THREE.ShaderMaterial({
     vertexShader: FULLSCREEN_VERT,
     fragmentShader: COMPOSITE_FRAG,
     uniforms: {
-      uPaint: { value: null },
+      uBase: { value: baseTex },
+      uGlint: { value: glintTex },
       uSim: { value: sim.a.texture },
       uSimTexel: { value: new THREE.Vector2(1 / SIM_W, 1 / SIM_H) },
       uPaperScale: { value: new THREE.Vector2(ctx.width, ctx.height) },
       uTime: { value: 0 },
-      uGlints: { value: glints },
+      uAmp: { value: ctx.reducedMotion ? 0.25 : 1 },
     },
     depthTest: false,
     depthWrite: false,
   });
 
-  let paintRT: THREE.WebGLRenderTarget | null = null;
-  let frameNo = 0;
-  let forcePaint = true;
-  let clock = 0;
-  let paintClock = 0;
-
   const queue: { x: number; y: number; r: number; s: number }[] = [];
-  const toSea = (u: { x: number; y: number }) => ({ x: u.x, y: (u.y - HORIZON) / (1 - HORIZON) });
   const addDrop = (u: { x: number; y: number }, r: number, s: number) => {
     if (u.y <= HORIZON + 0.005 || queue.length >= MAX_DROPS) return;
-    const sv = toSea(u);
-    queue.push({ x: sv.x, y: sv.y, r: r * (0.35 + sv.y), s });
-  };
-  const addGlint = (u: { x: number; y: number }, len: number, life: number) => {
-    if (u.y <= HORIZON + 0.004) return;
-    const i = glintNext++ % MAX_GLINTS;
-    const s = (u.y - HORIZON) / (1 - HORIZON);
-    glints[i].set(u.x * ASP, u.y, 0.001, len * (0.35 + 0.9 * s));
-    glintBirth[i] = clock;
-    glintLife[i] = life;
+    const sy = (u.y - HORIZON) / (1 - HORIZON);
+    queue.push({ x: u.x, y: sy, r: r * (0.3 + sy), s });
   };
 
+  // hover: a soft, continuous wake that follows the pointer; tap: a ring
   let last: { x: number; y: number } | null = null;
   const onMove = (e: PointerEvent) => {
     const u = ctx.toLocal(e);
@@ -92,15 +80,11 @@ const mount: MountPiece = (ctx): PieceInstance => {
       return;
     }
     if (last) {
-      const dx = (u.x - last.x) * ASP, dy = u.y - last.y;
-      const len = Math.hypot(dx, dy);
-      if (len > 0.002) {
-        addDrop(u, 0.03, Math.min(0.05, len * 0.8));
-        const n = Math.min(3, Math.floor(len / 0.01) + (Math.random() < 0.5 ? 1 : 0));
-        for (let i = 0; i < n; i++) {
-          const jx = (Math.random() - 0.5) * 0.06, jy = (Math.random() - 0.5) * 0.02;
-          addGlint({ x: u.x + jx, y: u.y + jy }, 0.008 + Math.random() * 0.012, 0.9 + Math.random() * 0.9);
-        }
+      const len = Math.hypot((u.x - last.x) * 0.57, u.y - last.y);
+      const steps = Math.min(4, Math.ceil(len / 0.012));
+      for (let i = 1; i <= steps; i++) {
+        const k = i / steps;
+        addDrop({ x: last.x + (u.x - last.x) * k, y: last.y + (u.y - last.y) * k }, 0.035, Math.min(0.035, len * 0.5) / steps);
       }
     }
     last = u;
@@ -108,57 +92,23 @@ const mount: MountPiece = (ctx): PieceInstance => {
   const onLeave = () => (last = null);
   const onDown = (e: PointerEvent) => {
     if (!ctx.isFocused()) return;
-    const u = ctx.toLocal(e);
-    addDrop(u, 0.05, 0.25);
-    for (let i = 0; i < 9; i++) {
-      const a = Math.random() * Math.PI * 2;
-      const r = 0.02 + Math.random() * 0.07;
-      addGlint({ x: u.x + (Math.cos(a) * r) / ASP * 0.6, y: u.y + Math.sin(a) * r * 0.25 }, 0.01 + Math.random() * 0.016, 1.2 + Math.random());
-    }
+    addDrop(ctx.toLocal(e), 0.06, 0.22);
   };
   ctx.el.addEventListener("pointermove", onMove);
   ctx.el.addEventListener("pointerleave", onLeave);
   ctx.el.addEventListener("pointerdown", onDown);
 
   if (location.search.includes("debug")) {
-    (window as unknown as Record<string, unknown>).__sunsetPoke = (x: number, y: number) => {
-      addDrop({ x, y }, 0.05, 0.25);
-      for (let i = 0; i < 9; i++) addGlint({ x: x + (Math.random() - 0.5) * 0.15, y: y + (Math.random() - 0.5) * 0.03 }, 0.015, 3);
-    };
+    (window as unknown as Record<string, unknown>).__sunsetPoke = (x: number, y: number) => addDrop({ x, y }, 0.06, 0.25);
+    (window as unknown as Record<string, unknown>).__sunsetBase = base;
   }
 
   return {
     setResolution(ppu) {
       gl.setSize(ctx.width * ppu, ctx.height * ppu);
-      paintRT?.dispose();
-      paintRT = new THREE.WebGLRenderTarget(gl.width, gl.height, {
-        type: THREE.UnsignedByteType,
-        minFilter: THREE.NearestFilter,
-        magFilter: THREE.NearestFilter,
-        depthBuffer: false,
-      });
-      compMat.uniforms.uPaint.value = paintRT.texture;
-      forcePaint = true;
     },
-    frame(time, dt) {
-      if (!paintRT) return;
-      clock = time;
-      const t = time * motion;
-      frameNo++;
-      if (forcePaint || frameNo % SKY_EVERY === 0) {
-        paintClock = t;
-        paintMat.uniforms.uTime.value = paintClock;
-        gl.draw(paintMat, paintRT);
-        forcePaint = false;
-      }
-      // ambient: the sea breathes a little on its own
-      if (!ctx.reducedMotion && Math.random() < dt * 0.6) {
-        addDrop({ x: 0.1 + Math.random() * 0.8, y: HORIZON + 0.1 + Math.random() * 0.5 }, 0.025, 0.02);
-      }
-      for (let i = 0; i < MAX_GLINTS; i++) {
-        const age = (time - glintBirth[i]) / glintLife[i];
-        glints[i].z = age > 0 && age < 1 ? age : 0;
-      }
+    frame(time) {
+      const t = time * (ctx.reducedMotion ? 0.3 : 1);
       for (let step = 0; step < 2; step++) {
         const n = step === 0 ? queue.length : 0;
         if (step === 0) queue.forEach((d, i) => drops[i].set(d.x, d.y, d.r, d.s));
@@ -171,15 +121,14 @@ const mount: MountPiece = (ctx): PieceInstance => {
       compMat.uniforms.uSim.value = sim.a.texture;
       compMat.uniforms.uTime.value = t;
       gl.draw(compMat, null);
-      void dt;
     },
     dispose() {
       ctx.el.removeEventListener("pointermove", onMove);
       ctx.el.removeEventListener("pointerleave", onLeave);
       ctx.el.removeEventListener("pointerdown", onDown);
-      paintRT?.dispose();
       sim.dispose();
-      paintMat.dispose();
+      baseTex.dispose();
+      glintTex.dispose();
       simMat.dispose();
       compMat.dispose();
       gl.dispose();
