@@ -24,9 +24,9 @@ const vec3 PINK     = vec3(0.985, 0.760, 0.820);
 const vec3 LILAC    = vec3(0.880, 0.780, 0.920);
 const vec3 PURPLE   = vec3(0.760, 0.660, 0.880);
 const vec3 VIOLET   = vec3(0.660, 0.600, 0.880);
-const vec3 ULTRA    = vec3(0.560, 0.660, 0.950);
-const vec3 DEEP     = vec3(0.440, 0.540, 0.840);
-const vec3 TEALBLUE = vec3(0.500, 0.720, 0.880);
+const vec3 ULTRA    = vec3(0.600, 0.680, 0.930);
+const vec3 DEEP     = vec3(0.480, 0.580, 0.860);
+const vec3 TEALBLUE = vec3(0.440, 0.740, 0.880);
 `;
 
 /**
@@ -211,13 +211,16 @@ void main() {
     float inSea = smoothstep(0.002, -0.002, sheet);
     float g = granulate(pp, 1.0);
     float column = exp(-pow(abs(q.x - SUNX) / (0.04 + 0.2 * S), 2.0));
-    col = glaze(col, PINK, inSea * g, (1.0 - 0.75 * smoothstep(0.0, 0.8, S)) * (0.6 + 0.4 * wet) + column * 0.45 * (1.0 - S));
+    col = glaze(col, PINK, inSea * g, (1.0 - 0.9 * smoothstep(0.0, 0.85, S)) * (0.6 + 0.4 * wet) + column * 0.45 * (1.0 - S));
     col = glaze(col, PEACH, inSea * g, column * 0.5 * (1.0 - S) + 0.25 * smoothstep(0.2, 0.5, fbm(q * vec2(3.0, 30.0) + 5.0)));
+    // coral and rose light caught between the waves
+    float between = smoothstep(0.05, 0.4, fbm(q * vec2(2.4, 26.0) + 9.0));
+    col = glaze(col, mix(CORAL, PINK, 0.5), inSea * g, between * (0.5 - 0.35 * S));
     col = glaze(col, LILAC, inSea * g, (0.5 + 0.3 * wet) * smoothstep(0.0, 0.25, S));
     col = glaze(col, PURPLE, inSea * g, band(S, 0.38, 0.25) * (0.4 + 0.4 * wet));
-    col = glaze(col, VIOLET, inSea * g, smoothstep(0.35, 0.85, S) * (0.3 + 0.4 * wet));
+    col = glaze(col, VIOLET, inSea * g, band(S, 0.6, 0.2) * (0.3 + 0.4 * wet));
     col = glaze(col, ULTRA, inSea * g, smoothstep(0.55, 1.0, S) * (0.45 + 0.4 * wet));
-    col = glaze(col, TEALBLUE, inSea * g, smoothstep(0.7, 1.0, S) * 0.35 * smoothstep(-0.1, 0.3, wet));
+    col = glaze(col, TEALBLUE, inSea * g, smoothstep(0.6, 1.0, S) * 0.55 * smoothstep(-0.2, 0.3, wet));
     // the far water right under the horizon: a darker, crisp-topped lilac band
     float far = smoothstep(0.0, 0.004, uv.y - YH) * (1.0 - smoothstep(0.02, 0.05, uv.y - YH));
     col = glaze(col, PURPLE * PINK, inSea * g, far * 0.7 * (1.0 - 0.6 * column));
@@ -283,18 +286,20 @@ float granul(vec2 pp, float gran) {
 }
 
 // row coordinate: rows get thinner toward the horizon (perspective)
-const float ROWS = 40.0;
+const float ROWS = 29.0;
 float rowCoord(float s) { return ROWS * pow(max(s, 1e-5), 0.68); }
 float rowHeight(float s) { return 1.0 / (ROWS * 0.68 * pow(max(s, 1e-4), -0.32)); }
 
 vec3 seaPigment(float S, float h) {
-  float k = clamp(S * 5.6 + (h - 0.5) * (1.4 + 2.4 * S) - 0.2, 0.0, 5.0);
+  float k = clamp(S * 5.4 + (h - 0.5) * (1.4 + 2.0 * S) - 0.15, 0.0, 5.0);
   vec3 a = PINK;
   a = mix(a, LILAC, clamp(k, 0.0, 1.0));
   a = mix(a, PURPLE, clamp(k - 1.0, 0.0, 1.0));
   a = mix(a, VIOLET, clamp(k - 2.0, 0.0, 1.0));
-  a = mix(a, ULTRA, clamp(k - 3.0, 0.0, 1.0));
-  a = mix(a, mix(DEEP, TEALBLUE, step(0.55, fract(h * 13.0))), clamp(k - 4.0, 0.0, 1.0));
+  a = mix(a, ULTRA, clamp(k - 2.8, 0.0, 1.0));
+  // the deep water turns blue and teal-blue, not just violet
+  vec3 deep = fract(h * 13.0) > 0.4 ? TEALBLUE : DEEP;
+  a = mix(a, deep, clamp(k - 3.6, 0.0, 1.0));
   return a;
 }
 
@@ -322,54 +327,71 @@ void main() {
     float column = exp(-pow(abs(q.x - SUNX) / (0.03 + 0.2 * S), 2.0));
 
     // ---- brush strokes ----
-    float rowI = floor(R);
+    // warm reflections are painted around (reserved), not glazed over the blues
+    float warmCov = 0.0;
+    vec3 warmCol = PAPER_C;
+    // two passes of strokes: the main waves, then a lighter half-row-offset pass between them
+    for (int layer = 0; layer < 2; layer++) {
+    float fl = float(layer);
+    float RL = R + fl * 0.5;
+    float rowI = floor(RL);
     for (int j = -2; j <= 2; j++) {
       float row = rowI + float(j);
-      float rh1 = wcHash1(vec2(row, 3.7));
+      vec2 seedL = vec2(fl * 101.0, fl * 57.0);
+      float rh1 = wcHash1(vec2(row, 3.7) + seedL);
       float dir = rh1 > 0.5 ? 1.0 : -1.0;
       float drift = dir * t * (0.0025 + 0.004 * rh1) + 0.006 * sin(t * 0.35 + row * 0.9);
-      float cw = 0.13 + 0.25 * wcHash1(vec2(row, 9.1));
+      float cw = 0.13 + 0.25 * wcHash1(vec2(row, 9.1) + seedL);
       float xr = q.x + drift + hx * 0.02;
       float k0 = floor(xr / cw);
       for (int i = -1; i <= 1; i++) {
         float k = k0 + float(i);
-        vec2 id = vec2(row, k);
+        vec2 id = vec2(row, k) + seedL;
         float h = wcHash1(id);
         float h2 = wcHash1(id + 31.0);
         float h3 = wcHash1(id + 77.0);
-        if (h3 < 0.1) continue; // gaps let the ground wash and paper through
+        if (h3 < 0.1 + fl * 0.35) continue; // gaps let the ground wash and paper through
         float L = cw * (0.38 + 0.4 * h2);
         float cx = (k + 0.5 + (h - 0.5) * 0.4) * cw;
         float cy = row + 0.5 + (h2 - 0.5) * 0.5 + 0.12 * sin(t * 0.6 + k * 1.7 + row);
-        float T = 0.3 + 0.36 * h;
+        float T = 0.34 + 0.32 * h;
         float dx = (xr - cx) / L;
         float taper = pow(max(1.0 - pow(abs(dx), 2.6), 0.0), 0.45);
         // brushy edge: wobble along the stroke, ragged dry-brush ends
         float wob = 0.18 * gnoise(vec2(xr * 70.0, row * 3.1)) + 0.12 * gnoise(vec2(xr * 260.0, row * 5.3 + 2.0));
-        float up = R < cy ? 1.0 : 0.0; // crests: the upper edge is wavier
+        float up = RL < cy ? 1.0 : 0.0; // crests: the upper edge is wavier
         float crest = up * 0.35 * gnoise(vec2(xr * 38.0, row * 7.7 + 5.0));
         // warm sky reflections near the sun path and scattered elsewhere: thinner slivers
         // decided per stroke (at its centre), so a stroke never changes colour midway
-        float sRow = pow(max(cy, 0.0) / ROWS, 1.0 / 0.68);
+        float sRow = pow(max(cy - fl * 0.5, 0.0) / ROWS, 1.0 / 0.68);
         float SRow = sRow / (1.0 - YH);
         float colC = exp(-pow(abs(cx - drift - hx * 0.02 - SUNX) / (0.03 + 0.2 * SRow), 2.0));
-        float warmP = 0.2 + 0.45 * colC * (1.0 - SRow * 0.5);
+        float warmP = 0.24 + 0.45 * colC * (1.0 - SRow * 0.5);
         bool warm = h2 * 0.7 + h3 * 0.3 < warmP;
-        float dRows = abs(R - cy) - T * (warm ? 0.55 : 1.0) * taper * (1.0 + wob + crest);
+        float dRows = abs(RL - cy) - T * (warm ? 0.55 : 1.0) * taper * (1.0 + wob + crest);
         float d = dRows * rh;
         if (d > rh * 0.5) continue;
         float endDry = smoothstep(0.55, 1.0, abs(dx));
         d += endDry * (tooth - 0.35) * rh * 0.6;
         vec3 pig = warm ? (h < 0.4 ? CORAL : (h < 0.75 ? mix(PINK, CORAL, 0.5) : PEACH)) : seaPigment(SRow, h);
-        float dens = warm ? 0.55 + 0.3 * h : 0.7 + 0.8 * h2;
+        float dens = warm ? 0.8 + 0.5 * h : 0.7 + 0.8 * h2;
         dens *= warm ? 1.0 : 0.9 + 0.8 * SRow;
+        dens *= 1.0 - 0.45 * fl;
         float softE = rh * mix(0.05, 0.35, step(0.72, fract(h * 23.0)));
         float cover = smoothstep(softE, -softE, d) * edgeMask;
         float rim = exp(-max(-d, 0.0) / (rh * T * 0.3)) * cover * (softE > rh * 0.1 ? 0.3 : 1.0);
         float a = cover * (1.0 + 1.6 * rim) * granul(pp, 1.0);
-        col *= pow(pig, vec3(dens * a));
+        if (warm) {
+          float wa = clamp(cover * (1.0 + 0.8 * rim), 0.0, 1.0);
+          if (wa > warmCov) { warmCov = wa; warmCol = PAPER_C * pow(pig, vec3(dens * (1.0 + 1.2 * rim) * granul(pp, 0.8))); }
+        } else {
+          col *= pow(pig, vec3(dens * a));
+        }
       }
     }
+    }
+
+    col = mix(col, warmCol, warmCov * 0.92);
 
     // ---- the sun path: broken lifts of bare paper that twinkle ----
     float glintW = 0.016 + 0.06 * S;
