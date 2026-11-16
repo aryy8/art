@@ -190,8 +190,9 @@ function initTail(f: Fish) {
   const ny = tx;
   const seg = (L * (1 - S_TAIL_ROOT)) / (TAIL_N - 1);
   for (let i = 0; i < TAIL_N; i++) {
-    const ox = nx * (L * 0.04);
-    const oy = ny * (L * 0.04);
+    const flare = 0.06 + 0.08 * (i / (TAIL_N - 1));
+    const ox = nx * (L * flare);
+    const oy = ny * (L * flare);
     f.tailUX[i] = rx - tx * seg * i + ox;
     f.tailUY[i] = ry - ty * seg * i + oy;
     f.tailUPx[i] = f.tailUX[i];
@@ -516,8 +517,8 @@ function updateTail(f: Fish) {
   const nx = -ty;
   const ny = tx;
   const segLen = (L * (1 - S_TAIL_ROOT)) / (TAIL_N - 1);
-  const off = L * 0.04;
   const drag = 0.92;
+  const halfAt = (i: number) => L * (0.05 + 0.12 * (i / (TAIL_N - 1)));
 
   const integrate = (
     xs: Float32Array,
@@ -526,8 +527,8 @@ function updateTail(f: Fish) {
     py: Float32Array,
     side: number,
   ) => {
-    xs[0] = rx + nx * off * side;
-    ys[0] = ry + ny * off * side;
+    xs[0] = rx + nx * halfAt(0) * side;
+    ys[0] = ry + ny * halfAt(0) * side;
     px[0] = xs[0];
     py[0] = ys[0];
     for (let i = 1; i < TAIL_N; i++) {
@@ -537,15 +538,14 @@ function updateTail(f: Fish) {
       py[i] = ys[i];
       xs[i] += vx;
       ys[i] += vy;
-      const stiff = 0.08 * (1 - i / (TAIL_N - 1));
-      const restX = rx - tx * segLen * i + nx * off * side;
-      const restY = ry - ty * segLen * i + ny * off * side;
+      const stiff = 0.1 * (1 - i / (TAIL_N - 1));
+      const restX = rx - tx * segLen * i + nx * halfAt(i) * side;
+      const restY = ry - ty * segLen * i + ny * halfAt(i) * side;
       xs[i] += (restX - xs[i]) * stiff;
       ys[i] += (restY - ys[i]) * stiff;
-      // lobe phase delay
       if (i > TAIL_N - 4) {
-        xs[i] += Math.sin(f.phase * 0.5 + i * 0.4 + side) * 0.5 * f.beatEnergy;
-        ys[i] += Math.cos(f.phase * 0.4 + i * 0.3) * 0.4 * f.beatEnergy;
+        xs[i] += Math.sin(f.phase * 0.5 + i * 0.4 + side) * 0.8 * f.beatEnergy;
+        ys[i] += Math.cos(f.phase * 0.4 + i * 0.3) * 0.6 * f.beatEnergy;
       }
     }
     for (let iter = 0; iter < 3; iter++) {
@@ -564,8 +564,8 @@ function updateTail(f: Fish) {
           ys[i - 1] += dy * 0.5 * diff;
         }
       }
-      xs[0] = rx + nx * off * side;
-      ys[0] = ry + ny * off * side;
+      xs[0] = rx + nx * halfAt(0) * side;
+      ys[0] = ry + ny * halfAt(0) * side;
     }
   };
 
