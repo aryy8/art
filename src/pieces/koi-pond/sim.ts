@@ -216,6 +216,70 @@ const MIN_GAP = 4;
 const SOFT_GAP = 30;
 /** diagnostics for scripts/koi-overlap-test.mts */
 export const hardStats = { pushes: 0, px: 0, maxPx: 0 };
+/**
+ * Lotus corner keep-out (lotus, its leaf and the dark foliage), in pond px — same polygon the
+ * mask script uses (scripts/koi-masks.py, ×800/1448). Fish never enter it, not even a fin tip.
+ */
+const LOTUS_ZONE: [number, number][] = [
+  [-200, -200], [287, -200], [287, 66], [276, 127], [260, 182], [199, 202], [138, 221], [83, 232], [-200, 238],
+];
+/** Signed distance to the lotus zone: > 0 outside, < 0 inside. Also returns the outward normal. */
+export function lotusSdf(x: number, y: number) {
+  let best = Infinity;
+  let nx = 0;
+  let ny = 0;
+  let inside = false;
+  const P = LOTUS_ZONE;
+  for (let i = 0, j = P.length - 1; i < P.length; j = i++) {
+    const [ax, ay] = P[j];
+    const [bx, by] = P[i];
+    if ((ay > y) !== (by > y) && x < ((bx - ax) * (y - ay)) / (by - ay) + ax) inside = !inside;
+    const ex = bx - ax;
+    const ey = by - ay;
+    const t = clamp(((x - ax) * ex + (y - ay) * ey) / (ex * ex + ey * ey), 0, 1);
+    const cx = ax + ex * t;
+    const cy = ay + ey * t;
+    const d = Math.hypot(x - cx, y - cy);
+    if (d < best) {
+      best = d;
+      nx = d > 1e-6 ? (x - cx) / d : 0.7;
+      ny = d > 1e-6 ? (y - cy) / d : 0.7;
+    }
+  }
+  if (inside) {
+    nx = -nx;
+    ny = -ny;
+  }
+  return { d: inside ? -best : best, nx, ny };
+}
+const LOTUS_MARGIN = 6;
+/** Smallest clearance between a fish outline and the lotus zone (diagnostics + constraint). */
+export function lotusGap(f: Fish) {
+  let best = Infinity;
+  let bi = 0;
+  for (let i = 0; i < SPINE_N; i++) {
+    const g = lotusSdf(f.spineX[i], f.spineY[i]).d - halfWidth(f, i);
+    if (g < best) {
+      best = g;
+      bi = i;
+    }
+  }
+  return { gap: best, i: bi };
+}
+/** Hard keep-out: bend the veil / slide the fish out of the lotus corner. */
+function lotusHard(f: Fish) {
+  const root = Math.ceil(S_TAIL_ROOT * (SPINE_N - 1));
+  for (let iter = 0; iter < 16; iter++) {
+    const g = lotusGap(f);
+    if (g.gap >= LOTUS_MARGIN) return iter > 0;
+    const sd = lotusSdf(f.spineX[g.i], f.spineY[g.i]);
+    const need = LOTUS_MARGIN - g.gap + 0.3;
+    if (g.i >= root && iter < 6) bendTail(f, g.i, sd.nx * need, sd.ny * need);
+    else translateFish(f, sd.nx * need, sd.ny * need);
+  }
+  return true;
+}
+
 /** Keep the head inside the pond by sliding the whole fish (never teleport / re-pose it). */
 const WALL_X = 70;
 const WALL_Y = 58;
@@ -244,8 +308,10 @@ function bendTail(f: Fish, k: number, dx: number, dy: number) {
 function separateHard(a: Fish, b: Fish) {
   for (let iter = 0; iter < 48; iter++) {
     // walls first; if two pinned fish still touch after many tries, never-overlap wins over walls
-    const ca = iter < 24 ? containHard(a) : false;
-    const cb = iter < 24 ? containHard(b) : false;
+    // walls + lotus corner are absolute; fish-vs-fish is solved around them
+    // priority: lotus corner (absolute) > no overlap (absolute) > pond walls (soft, may yield a little)
+    const ca = Number(iter < 24 && containHard(a)) + Number(lotusHard(a)) > 0;
+    const cb = Number(iter < 24 && containHard(b)) + Number(lotusHard(b)) > 0;
     const g = fishGap(a, b);
     if (iter === 0 && g.gap < SOFT_GAP && g.gap >= MIN_GAP) {
       // soft cushion: a gentle sub-pixel nudge long before the hard limit is reached
@@ -268,13 +334,15 @@ function separateHard(a: Fish, b: Fish) {
     }
     const need = MIN_GAP - g.gap + 0.5;
     const root = Math.ceil(S_TAIL_ROOT * (SPINE_N - 1));
-    if ((g.i >= root || g.j >= root) && iter < 12) {
+    if ((g.i >= root && !ca) || (g.j >= root && !cb)) {
       // a veil is in the way: the flexible veil(s) bend aside instead of shoving whole fish
       const ux = dx / d;
       const uy = dy / d;
-      const both = g.i >= root && g.j >= root;
-      if (g.i >= root) bendTail(a, g.i, ux * need * (both ? 0.5 : 1), uy * need * (both ? 0.5 : 1));
-      if (g.j >= root) bendTail(b, g.j, -ux * need * (both ? 0.5 : 1), -uy * need * (both ? 0.5 : 1));
+      const bi = g.i >= root && !ca;
+      const bj = g.j >= root && !cb;
+      const both = bi && bj;
+      if (bi) bendTail(a, g.i, ux * need * (both ? 0.5 : 1), uy * need * (both ? 0.5 : 1));
+      if (bj) bendTail(b, g.j, -ux * need * (both ? 0.5 : 1), -uy * need * (both ? 0.5 : 1));
       hardStats.pushes++;
       continue;
     }
@@ -296,7 +364,7 @@ function separateHard(a: Fish, b: Fish) {
       }
     }
     let sl = Math.hypot(sx, sy);
-    if (iter >= 24 || sl < 1e-6) {
+    if (sl < 1e-6) {
       // last resort: slide the whole fish apart along the centroid line — always terminates
       let cax = 0, cay = 0, cbx = 0, cby = 0;
       for (let p = 0; p < SPINE_N; p++) {
@@ -313,18 +381,20 @@ function separateHard(a: Fish, b: Fish) {
     }
     const ux = sx / sl;
     const uy = sy / sl;
-    const step = Math.max(need, worst) * (iter < 24 ? 0.6 : 1.0);
+    const step = Math.min(Math.max(need, worst) * 0.6, 12);
     hardStats.pushes++;
     hardStats.px += step;
     hardStats.maxPx = Math.max(hardStats.maxPx, step);
     // a fish pinned on the wall does not move; the other one takes the whole push
-    const wa = ca && !cb ? 0.1 : !ca && cb ? 0.9 : 0.5;
+    const wa = ca && !cb ? 0 : !ca && cb ? 1 : 0.5;
     translateFish(a, ux * step * wa, uy * step * wa);
     translateFish(b, -ux * step * (1 - wa), -uy * step * (1 - wa));
     const away = Math.atan2(uy, ux);
     a.heading += clamp(angDiff(a.heading, away), -0.02, 0.02);
     b.heading += clamp(angDiff(b.heading, away + Math.PI), -0.02, 0.02);
   }
+  lotusHard(a);
+  lotusHard(b);
 }
 
 function bodyLen(f: Fish) {
@@ -394,9 +464,7 @@ export function createSim(reduced: boolean): SimState {
 
 function inWater(x: number, y: number): boolean {
   if (x < INSET || x > W - INSET || y < INSET || y > H - INSET) return false;
-  // soft avoid lotus top-left
-  if (x < 150 && y < 140) return false;
-  return true;
+  return lotusSdf(x, y).d > 40;
 }
 
 function steerFish(sim: SimState, f: Fish, other: Fish, dt: number) {
@@ -423,12 +491,40 @@ function steerFish(sim: SimState, f: Fish, other: Fish, dt: number) {
   const ly = f.pos.y + Math.sin(f.heading) * look;
   if (!inWater(lx, ly) || !inWater(f.pos.x, f.pos.y)) {
     n = norm(W * 0.5 - f.pos.x, H * 0.55 - f.pos.y);
-    if (f.pos.x < 160 && f.pos.y < 150) {
-      n = norm(1.5, 1.2);
-    }
     desireX += n.x * 6;
     desireY += n.y * 6;
     wSum += 6;
+  }
+  // lotus corner: predictive keep-out for the head path and the whole current outline
+  {
+    let worst = Infinity;
+    let wx = 0;
+    let wy = 0;
+    for (const k of [0, 0.4, 0.8, 1.2]) {
+      const sd = lotusSdf(f.pos.x + Math.cos(f.heading) * L * k, f.pos.y + Math.sin(f.heading) * L * k);
+      const g = sd.d - L * 0.35;
+      if (g < worst) {
+        worst = g;
+        wx = sd.nx;
+        wy = sd.ny;
+      }
+    }
+    for (let i = 0; i < SPINE_N; i += 3) {
+      const sd = lotusSdf(f.spineX[i], f.spineY[i]);
+      const g = sd.d - halfWidth(f, i) - 20;
+      if (g < worst) {
+        worst = g;
+        wx = sd.nx;
+        wy = sd.ny;
+      }
+    }
+    const zone = L * 0.5;
+    if (worst < zone) {
+      const w = 10 * Math.pow(1 - Math.max(-zone, worst) / zone, 2);
+      desireX += wx * w;
+      desireY += wy * w;
+      wSum += w;
+    }
   }
 
   // separation — predictive and body-aware: every spine point of this fish (now and ~0.8s
@@ -498,10 +594,10 @@ function steerFish(sim: SimState, f: Fish, other: Fish, dt: number) {
   }
 
   // curiosity
-  if (!fleeing && sim.pointer && sim.pointerStill > CURIOSITY_STILL ) {
+  if (!fleeing && sim.pointer && sim.pointerStill > CURIOSITY_STILL && lotusSdf(sim.pointer.x, sim.pointer.y).d > bodyLen(f) * 0.45) {
     const pd = Math.hypot(f.pos.x - sim.pointer.x, f.pos.y - sim.pointer.y);
     const od = Math.hypot(other.pos.x - sim.pointer.x, other.pos.y - sim.pointer.y);
-    // only the nearer koi comes to look; the other keeps its distance
+    // only the nearer koi comes to look; the other keeps its distance (never into the lotus)
     if ((pd < L * 2.5 || f.curiousT > 0) && !(other.curiousT > 0 && od < pd)) {
       f.curiousT += dt;
       if (f.curiousT < 6) {
@@ -585,21 +681,21 @@ function steerFish(sim: SimState, f: Fish, other: Fish, dt: number) {
   const tipY = f.spineY[SPINE_N - 2];
   const midX = f.spineX[Math.round(SPINE_N * 0.6)];
   const midY = f.spineY[Math.round(SPINE_N * 0.6)];
-  if (!sim.reduced && f.speed > 22 && Math.floor(sim.time * 60) % 3 === 0) {
-    // continuous wake scaled by speed — water should visibly churn behind them
-    const trail = (0.03 + f.speed * 0.0008) * (0.5 + f.beatEnergy * 0.5);
+  if (!sim.reduced && f.speed > 22) {
+    // continuous, gentle wake every step (no pulsing) so the water around the koi stays calm
+    const trail = (0.01 + f.speed * 0.00025) * (0.5 + f.beatEnergy * 0.5);
     sim.pendingDrops.push({
       x: tipX / W,
       y: tipY / H,
       r: 0.03 + f.speed * 0.0002,
-      s: trail,
+      s: trail * STEP_K,
     });
     if (f.beatEnergy > 0.4) {
       sim.pendingDrops.push({
         x: midX / W,
         y: midY / H,
         r: 0.022,
-        s: trail * 0.65,
+        s: trail * 0.65 * STEP_K,
       });
     }
   }
@@ -609,8 +705,8 @@ function steerFish(sim: SimState, f: Fish, other: Fish, dt: number) {
     sim.pendingDrops.push({
       x: tipX / W,
       y: tipY / H,
-      r: 0.04,
-      s: 0.16 + f.beatEnergy * 0.2 + f.speed * 0.0006,
+      r: 0.05,
+      s: 0.05 + f.beatEnergy * 0.06 + f.speed * 0.0002,
     });
   }
   if (wave < 0.15) f.wakeReady = false;
@@ -701,8 +797,8 @@ function layoutSpine(f: Fish, snap: boolean) {
     // head barely yaws, body bends a little, veil swings wide
     const env = 0.15 + 0.6 * s * s + (s > S_TAIL_ROOT ? 1.6 * Math.pow((s - S_TAIL_ROOT) / (1 - S_TAIL_ROOT), 1.5) : 0);
     const lat = Abase * env * Math.sin(f.phase - WAVE_K * s);
-    f.offX[j] *= 0.985;
-    f.offY[j] *= 0.985;
+    f.offX[j] *= OFF_DECAY;
+    f.offY[j] *= OFF_DECAY;
     const tx = px[j] - t.y * lat + f.offX[j];
     const ty = py[j] + t.x * lat + f.offY[j];
     if (snap || j === 0) {
@@ -711,7 +807,7 @@ function layoutSpine(f: Fish, snap: boolean) {
     } else {
       // veil inertia: points toward the tip follow their target more lazily
       const u = Math.max(0, (s - S_TAIL_ROOT * 0.7) / (1 - S_TAIL_ROOT * 0.7));
-      const follow = 1 - 0.8 * u;
+      const follow = 1 - Math.pow(0.8 * u, STEP_K);
       f.qX[j] += (tx - f.qX[j]) * follow;
       f.qY[j] += (ty - f.qY[j]) * follow;
     }
@@ -760,21 +856,32 @@ export function setPointer(sim: SimState, p: Vec2 | null, vel: number) {
   if (!p || vel > 40) sim.pointerStill = 0;
 }
 
+// per-substep scale (substep dt / (1/60)) for the frame-rate-independent springs
+let STEP_K = 1;
+let OFF_DECAY = 0.985;
+
+/**
+ * Advance the koi by exactly this frame's dt, split into equal substeps of <= 1/60 s.
+ * (A fixed 1/60 step with an accumulator made the fish stall for a frame every so often
+ * — and alternate move/stall on 120 Hz screens — which read as flicker against the water.)
+ */
 export function stepSim(sim: SimState, dt: number, acc: number): number {
   const capped = Math.min(dt, 0.05);
-  let a = acc + capped;
-  let steps = 0;
-  while (a >= FISH_DT && steps < 4) {
-    sim.time += FISH_DT;
-    if (sim.pointer && sim.pointerVel < 40) sim.pointerStill += FISH_DT;
-    steerFish(sim, sim.fish[0], sim.fish[1], FISH_DT);
-    steerFish(sim, sim.fish[1], sim.fish[0], FISH_DT);
+  if (capped <= 0) return acc;
+  const n = Math.max(1, Math.ceil(capped / FISH_DT - 1e-6));
+  const h = capped / n;
+  STEP_K = h / FISH_DT;
+  OFF_DECAY = Math.pow(0.985, STEP_K);
+  for (let steps = 0; steps < n; steps++) {
+    sim.time += h;
+    if (sim.pointer && sim.pointerVel < 40) sim.pointerStill += h;
+    steerFish(sim, sim.fish[0], sim.fish[1], h);
+    steerFish(sim, sim.fish[1], sim.fish[0], h);
     for (const f of sim.fish) {
       updateSpine(f);
     }
+    for (const f of sim.fish) lotusHard(f);
     separateHard(sim.fish[0], sim.fish[1]);
-    a -= FISH_DT;
-    steps++;
   }
-  return a;
+  return 0;
 }
