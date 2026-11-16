@@ -6,6 +6,8 @@
  *   burst/glide timing, separation, boundary inset.
  */
 
+import { SDF, SDF_W, SDF_H, SDF_CELL } from "./water-sdf.ts";
+
 export const W = 800;
 export const H = 600;
 /** Match the painted koi: ~38% of pond width, thick body + massive veil. */
@@ -17,9 +19,10 @@ export const S_TAIL_ROOT = 0.59;
 /** head-path history used so the body follows exactly where the head has been */
 const HIST = 1400;
 
-export const SPEED_BURST = 72;
-export const SPEED_GLIDE_MIN = 16;
-export const TURN_MAX = 1.45;
+export const SPEED_BURST = 58;
+export const SPEED_FLEE = 95;
+export const SPEED_GLIDE_MIN = 18;
+export const TURN_MAX = 1.1;
 export const WAVE_K = 4.6;
 export const A_BODY = 0.055; // × L — visible swim undulation
 export const A_TAIL = 0.18;
@@ -83,6 +86,22 @@ export interface Fish {
   /** persistent veil avoidance offsets (decay slowly) so bent-aside tails don't snap back */
   offX: Float32Array;
   offY: Float32Array;
+  /** planned turn rate (rad/s) and time to the next re-plan */
+  planW: number;
+  planT: number;
+  /** where the last scare came from */
+  fleeX: number;
+  fleeY: number;
+  /** current wander goal and how long to keep it */
+  goalX: number;
+  goalY: number;
+  goalT: number;
+  /** free room along the planned path (0 tight … 1 open) */
+  room: number;
+  /** every planned path still touches the other koi: brake and pivot instead of driving in */
+  blocked: boolean;
+  /** this koi's head is closing in on the other one right now */
+  headThreat: boolean;
 }
 
 export interface SimState {
@@ -94,6 +113,8 @@ export interface SimState {
   reduced: boolean;
   time: number;
   pendingDrops: { x: number; y: number; r: number; s: number }[];
+  /** outline gap between the koi at the last substep */
+  lastGap: number;
 }
 
 function clamp(v: number, a: number, b: number) {
@@ -112,6 +133,12 @@ function angDiff(a: number, b: number) {
   while (d > Math.PI) d -= TWO_PI;
   while (d < -Math.PI) d += TWO_PI;
   return d;
+}
+/** small seeded PRNG so a run is reproducible (createSim reseeds it) */
+let rngState = 1;
+function rand() {
+  rngState = (rngState * 16807) % 2147483647;
+  return rngState / 2147483647;
 }
 function noise1(t: number, seed: number) {
   return Math.sin(t * 1.7 + seed * 12.3) * 0.5 + Math.sin(t * 0.9 + seed * 4.1) * 0.5;
@@ -133,8 +160,8 @@ function makeFish(x: number, y: number, heading: number, seed: number, scale: nu
     wanderTheta: seed,
     noiseSeed: seed,
     headScale: 1,
-    finL: 0.7,
-    finR: 0.7,
+    finL: 0.35,
+    finR: 0.35,
     scale,
     tint,
     spineX: new Float32Array(SPINE_N),
@@ -161,6 +188,16 @@ function makeFish(x: number, y: number, heading: number, seed: number, scale: nu
     curv: new Float32Array(SPINE_N),
     offX: new Float32Array(SPINE_N),
     offY: new Float32Array(SPINE_N),
+    planW: 0,
+    planT: seed * 0.05,
+    fleeX: x,
+    fleeY: y,
+    goalX: x + Math.cos(heading) * 200,
+    goalY: y + Math.sin(heading) * 200,
+    goalT: 3 + seed,
+    room: 1,
+    blocked: false,
+    headThreat: false,
   };
   initSpine(f, bend);
   return f;
@@ -211,11 +248,16 @@ function translateFish(f: Fish, dx: number, dy: number) {
   }
 }
 
-/** Hard constraint: if the outlines still come closer than MIN_GAP, push the whole fish apart. */
+/**
+ * Last-resort constraints. The path planner in steerFish keeps every fish clear of the other
+ * one, the lotus corner and the pond edge, so these should almost never fire. When they do,
+ * they move a fish by a fraction of a pixel per substep, sideways only (never backwards), and
+ * never touch its heading — a fish that is driving into something brakes instead.
+ */
 const MIN_GAP = 4;
-const SOFT_GAP = 30;
+const NUDGE_MAX = 1.5;
 /** diagnostics for scripts/koi-overlap-test.mts */
-export const hardStats = { pushes: 0, px: 0, maxPx: 0 };
+export const hardStats = { pushes: 0, px: 0, maxPx: 0, bends: 0 };
 /**
  * Lotus corner keep-out (lotus, its leaf and the dark foliage), in pond px — same polygon the
  * mask script uses (scripts/koi-masks.py, ×800/1448). Fish never enter it, not even a fin tip.
@@ -266,33 +308,67 @@ export function lotusGap(f: Fish) {
   }
   return { gap: best, i: bi };
 }
-/** Hard keep-out: bend the veil / slide the fish out of the lotus corner. */
-function lotusHard(f: Fish) {
-  const root = Math.ceil(S_TAIL_ROOT * (SPINE_N - 1));
-  for (let iter = 0; iter < 16; iter++) {
-    const g = lotusGap(f);
-    if (g.gap >= LOTUS_MARGIN) return iter > 0;
-    const sd = lotusSdf(f.spineX[g.i], f.spineY[g.i]);
-    const need = LOTUS_MARGIN - g.gap + 0.3;
-    if (g.i >= root && iter < 6) bendTail(f, g.i, sd.nx * need, sd.ny * need);
-    else translateFish(f, sd.nx * need, sd.ny * need);
+
+const TAIL_ROOT_I = Math.ceil(S_TAIL_ROOT * (SPINE_N - 1));
+
+/** Slide the whole fish by at most `cap` px, dropping any part that would push it backwards. */
+function nudgeFish(f: Fish, dx: number, dy: number, cap = NUDGE_MAX) {
+  const hx = Math.cos(f.heading);
+  const hy = Math.sin(f.heading);
+  const along = dx * hx + dy * hy;
+  if (along < 0) {
+    dx -= along * hx;
+    dy -= along * hy;
   }
-  return true;
+  const m = Math.hypot(dx, dy);
+  if (m < 1e-6 || cap <= 0) return 0;
+  const k = Math.min(1, cap / m);
+  translateFish(f, dx * k, dy * k);
+  hardStats.pushes++;
+  hardStats.px += m * k;
+  hardStats.maxPx = Math.max(hardStats.maxPx, m * k);
+  return m * k;
 }
 
-/** Keep the head inside the pond by sliding the whole fish (never teleport / re-pose it). */
+/** A head driving into something slows down (the only way a koi "stops"). */
+function brakeIfInto(f: Fish, nx: number, ny: number) {
+  if (Math.cos(f.heading) * nx + Math.sin(f.heading) * ny < 0) f.speed = Math.max(2, f.speed * 0.85);
+}
+
+/** Lotus corner is absolute: the veil bends away, the body slides off it sideways and brakes. */
+function lotusHard(f: Fish) {
+  for (let it = 0; it < 2; it++) lotusStep(f);
+}
+function lotusStep(f: Fish) {
+  const g = lotusGap(f);
+  if (g.gap >= LOTUS_MARGIN) return;
+  const sd = lotusSdf(f.spineX[g.i], f.spineY[g.i]);
+  const need = LOTUS_MARGIN - g.gap + 0.3;
+  if (g.i >= TAIL_ROOT_I) {
+    const k = Math.min(need, 1.5);
+    bendTail(f, g.i, sd.nx * k, sd.ny * k);
+    if (g.gap < LOTUS_MARGIN - 2) nudgeFish(f, sd.nx * need, sd.ny * need);
+  } else {
+    brakeIfInto(f, sd.nx, sd.ny);
+    nudgeFish(f, sd.nx * need, sd.ny * need);
+  }
+}
+
+/** Keep the head inside the paper edge (gently; the planner keeps well clear of it). */
 const WALL_X = 70;
 const WALL_Y = 58;
 function containHard(f: Fish) {
   const dx = Math.max(0, WALL_X - f.pos.x) - Math.max(0, f.pos.x - (W - WALL_X));
   const dy = Math.max(0, WALL_Y - f.pos.y) - Math.max(0, f.pos.y - (H - WALL_Y));
-  if (dx || dy) translateFish(f, dx, dy);
-  return dx !== 0 || dy !== 0;
+  if (!dx && !dy) return;
+  brakeIfInto(f, dx, dy);
+  nudgeFish(f, dx, dy);
 }
 
 /** Displace the veil around spine point k by (dx,dy), fading in from the tail root. */
 function bendTail(f: Fish, k: number, dx: number, dy: number) {
-  const root = Math.ceil(S_TAIL_ROOT * (SPINE_N - 1));
+  hardStats.bends++;
+  const root = TAIL_ROOT_I;
   for (let i = root; i < SPINE_N; i++) {
     const w = Math.min(1, (i - root + 1) / Math.max(1, k - root + 1));
     const ww = w * w * (3 - 2 * w);
@@ -306,24 +382,13 @@ function bendTail(f: Fish, k: number, dx: number, dy: number) {
 }
 
 function separateHard(a: Fish, b: Fish) {
-  for (let iter = 0; iter < 48; iter++) {
-    // walls first; if two pinned fish still touch after many tries, never-overlap wins over walls
-    // walls + lotus corner are absolute; fish-vs-fish is solved around them
-    // priority: lotus corner (absolute) > no overlap (absolute) > pond walls (soft, may yield a little)
-    const ca = Number(iter < 24 && containHard(a)) + Number(lotusHard(a)) > 0;
-    const cb = Number(iter < 24 && containHard(b)) + Number(lotusHard(b)) > 0;
+  // a few relaxation passes; each fish moves at most NUDGE_MAX px per substep in total,
+  // sideways only, and whatever is left over becomes a brake
+  let budA = NUDGE_MAX;
+  let budB = NUDGE_MAX;
+  for (let iter = 0; iter < 4; iter++) {
     const g = fishGap(a, b);
-    if (iter === 0 && g.gap < SOFT_GAP && g.gap >= MIN_GAP) {
-      // soft cushion: a gentle sub-pixel nudge long before the hard limit is reached
-      const dx = a.spineX[g.i] - b.spineX[g.j];
-      const dy = a.spineY[g.i] - b.spineY[g.j];
-      const d = Math.hypot(dx, dy) || 1;
-      const k = (SOFT_GAP - g.gap) * 0.04;
-      translateFish(a, (dx / d) * k * 0.5, (dy / d) * k * 0.5);
-      translateFish(b, (-dx / d) * k * 0.5, (-dy / d) * k * 0.5);
-      return;
-    }
-    if (g.gap >= MIN_GAP) return;
+    if (g.gap >= MIN_GAP + 0.5) return;
     let dx = a.spineX[g.i] - b.spineX[g.j];
     let dy = a.spineY[g.i] - b.spineY[g.j];
     let d = Math.hypot(dx, dy);
@@ -332,69 +397,22 @@ function separateHard(a: Fish, b: Fish) {
       dy = a.pos.y - b.pos.y;
       d = Math.hypot(dx, dy) || 1;
     }
-    const need = MIN_GAP - g.gap + 0.5;
-    const root = Math.ceil(S_TAIL_ROOT * (SPINE_N - 1));
-    if ((g.i >= root && !ca) || (g.j >= root && !cb)) {
-      // a veil is in the way: the flexible veil(s) bend aside instead of shoving whole fish
-      const ux = dx / d;
-      const uy = dy / d;
-      const bi = g.i >= root && !ca;
-      const bj = g.j >= root && !cb;
-      const both = bi && bj;
-      if (bi) bendTail(a, g.i, ux * need * (both ? 0.5 : 1), uy * need * (both ? 0.5 : 1));
-      if (bj) bendTail(b, g.j, -ux * need * (both ? 0.5 : 1), -uy * need * (both ? 0.5 : 1));
-      hardStats.pushes++;
-      continue;
+    const ux = dx / d;
+    const uy = dy / d;
+    const need = MIN_GAP + 0.5 - g.gap;
+    const ta = g.i >= TAIL_ROOT_I;
+    const tb = g.j >= TAIL_ROOT_I;
+    if (ta || tb) {
+      const k = Math.min(need, 1.5) * (ta && tb ? 0.5 : 1);
+      if (ta) bendTail(a, g.i, ux * k, uy * k);
+      if (tb) bendTail(b, g.j, -ux * k, -uy * k);
     }
-    // whole-fish push: sum the correction over EVERY violating pair (position-based solve), so
-    // crossing bodies get one consistent separating direction instead of oscillating
-    let sx = 0;
-    let sy = 0;
-    let worst = 0;
-    for (let p = 0; p < SPINE_N; p++) {
-      for (let q = 0; q < SPINE_N; q++) {
-        const ex = a.spineX[p] - b.spineX[q];
-        const ey = a.spineY[p] - b.spineY[q];
-        const ed = Math.hypot(ex, ey);
-        const def = MIN_GAP + 0.5 - (ed - halfWidth(a, p) - halfWidth(b, q));
-        if (def <= 0) continue;
-        worst = Math.max(worst, def);
-        sx += (ed > 1e-3 ? ex / ed : dx / d) * def;
-        sy += (ed > 1e-3 ? ey / ed : dy / d) * def;
-      }
-    }
-    let sl = Math.hypot(sx, sy);
-    if (sl < 1e-6) {
-      // last resort: slide the whole fish apart along the centroid line — always terminates
-      let cax = 0, cay = 0, cbx = 0, cby = 0;
-      for (let p = 0; p < SPINE_N; p++) {
-        cax += a.spineX[p]; cay += a.spineY[p]; cbx += b.spineX[p]; cby += b.spineY[p];
-      }
-      sx = cax - cbx;
-      sy = cay - cby;
-      sl = Math.hypot(sx, sy);
-    }
-    if (sl < 1e-6) {
-      sx = a.pos.x - b.pos.x;
-      sy = a.pos.y - b.pos.y;
-      sl = Math.hypot(sx, sy) || 1;
-    }
-    const ux = sx / sl;
-    const uy = sy / sl;
-    const step = Math.min(Math.max(need, worst) * 0.6, 12);
-    hardStats.pushes++;
-    hardStats.px += step;
-    hardStats.maxPx = Math.max(hardStats.maxPx, step);
-    // a fish pinned on the wall does not move; the other one takes the whole push
-    const wa = ca && !cb ? 0 : !ca && cb ? 1 : 0.5;
-    translateFish(a, ux * step * wa, uy * step * wa);
-    translateFish(b, -ux * step * (1 - wa), -uy * step * (1 - wa));
-    const away = Math.atan2(uy, ux);
-    a.heading += clamp(angDiff(a.heading, away), -0.02, 0.02);
-    b.heading += clamp(angDiff(b.heading, away + Math.PI), -0.02, 0.02);
+    budA -= nudgeFish(a, ux * need * 0.5, uy * need * 0.5, budA);
+    budB -= nudgeFish(b, -ux * need * 0.5, -uy * need * 0.5, budB);
+    // the head driving in brakes
+    if (g.i < TAIL_ROOT_I) brakeIfInto(a, ux, uy);
+    if (g.j < TAIL_ROOT_I) brakeIfInto(b, -ux, -uy);
   }
-  lotusHard(a);
-  lotusHard(b);
 }
 
 function bodyLen(f: Fish) {
@@ -438,7 +456,8 @@ function pushHist(f: Fish, x: number, y: number) {
 }
 
 /** Start poses roughly matching target.png yin-yang. */
-export function createSim(reduced: boolean): SimState {
+export function createSim(reduced: boolean, seed = 1): SimState {
+  rngState = Math.max(1, Math.floor(seed)) % 2147483646;
   // Upper fish: head right-ish; lower: circling opposite
   // matched to TARGET_FINAL: upper-left koi head ≈ (381,271) heading down-right, C-curve;
   // lower-right koi head ≈ (421,342) heading left, veil sweeping up-right (yin-yang)
@@ -459,207 +478,337 @@ export function createSim(reduced: boolean): SimState {
     reduced,
     time: 0,
     pendingDrops: [],
+    lastGap: Infinity,
   };
 }
 
-function inWater(x: number, y: number): boolean {
-  if (x < INSET || x > W - INSET || y < INSET || y > H - INSET) return false;
-  return lotusSdf(x, y).d > 40;
+/** Visible-water clearance (px): > 0 open water, < 0 under a lily pad, the lotus or off the paper. */
+export function waterClear(x: number, y: number) {
+  const fx = clamp(x / SDF_CELL - 0.5, 0, SDF_W - 1.001);
+  const fy = clamp(y / SDF_CELL - 0.5, 0, SDF_H - 1.001);
+  const ix = fx | 0;
+  const iy = fy | 0;
+  const tx = fx - ix;
+  const ty = fy - iy;
+  const i = iy * SDF_W + ix;
+  const top = SDF[i] * (1 - tx) + SDF[i + 1] * tx;
+  const bot = SDF[i + SDF_W] * (1 - tx) + SDF[i + SDF_W + 1] * tx;
+  return (top * (1 - ty) + bot * ty) * 2;
 }
+/** Distance to the painted paper edge of the pond (the hard boundary). */
+const EDGE_X0 = 64;
+const EDGE_X1 = 740;
+const EDGE_Y0 = 46;
+const EDGE_Y1 = 550;
+function edgeClear(x: number, y: number) {
+  return Math.min(x - EDGE_X0, EDGE_X1 - x, y - EDGE_Y0, EDGE_Y1 - y);
+}
+
+/**
+ * Path planner. Every PLAN_EVERY s each koi tries a fan of smooth arcs (same turn-rate
+ * limits as the real controller) PLAN_STEPS×PLAN_DT s ahead and keeps the one that stays in
+ * open water, far from the paper edge, the lotus corner and the other koi's body and path,
+ * while heading for its goal (or away from a click). Because the body follows the head's own
+ * path, a clear head path means a clear body, so the hard constraints almost never fire.
+ */
+const PLAN_DT = 0.2;
+const PLAN_STEPS = 12;
+const PLAN_EVERY = 0.1;
+const PLAN_CANDS = 13;
+const ANG_ACC = 1.6;
+const ANG_ACC_FLEE = 5;
+const planX = new Float32Array(PLAN_STEPS + 1);
+const planY = new Float32Array(PLAN_STEPS + 1);
+const othX = new Float32Array(PLAN_STEPS + 1);
+const othY = new Float32Array(PLAN_STEPS + 1);
+
+/**
+ * Koi turn by bending, so the head path is never tighter than the spine's joint limits allow
+ * (~0.34 L radius): a slow fish turns slowly instead of pivoting on the spot, which would make
+ * the body swing wide off its own path.
+ */
+function turnCap(f: Fish, speed: number, fleeing: boolean) {
+  const rMin = bodyLen(f) * (fleeing ? 0.3 : 0.36);
+  return Math.min(fleeing ? 1.6 : TURN_MAX, Math.max(fleeing ? 0.7 : 0.5, speed / rMin));
+}
+
+function placeCost(x: number, y: number, L: number) {
+  let c = 0;
+  const wc = waterClear(x, y);
+  if (wc < 55) c += 3 * ((55 - wc) / 55) ** 2; // soft: may slip under a pad for a moment
+  // each paper edge on its own (a sum, not a min, so turning back toward open water always pays)
+  for (const e of [x - EDGE_X0, EDGE_X1 - x, y - EDGE_Y0, EDGE_Y1 - y]) {
+    if (e < 110) c += 30 * ((110 - e) / 110) ** 2 + (e < 20 ? 200 + 10 * (20 - e) : 0);
+  }
+  const want = L * 0.45;
+  const ld = lotusSdf(x, y).d;
+  if (ld < want) c += 60 * ((want - ld) / want) ** 2 + (ld < want * 0.5 ? 200 + 4 * (want * 0.5 - ld) : 0);
+  return c;
+}
+
+function pickGoal(f: Fish, other: Fish) {
+  let best = -Infinity;
+  for (let t = 0; t < 16; t++) {
+    const x = 110 + rand() * 580;
+    const y = 100 + rand() * 410;
+    const wc = waterClear(x, y);
+    if (wc < 60 || lotusSdf(x, y).d < bodyLen(f) * 0.6 || edgeClear(x, y) < 110) continue;
+    const d = Math.hypot(x - f.pos.x, y - f.pos.y);
+    const od = Math.hypot(x - other.goalX, y - other.goalY);
+    const op = Math.hypot(x - other.pos.x, y - other.pos.y);
+    const score = wc + Math.min(d, 320) * 0.6 + Math.min(od, 300) * 0.6 + Math.min(op, 300) * 0.5 + rand() * 40;
+    if (score > best) {
+      best = score;
+      f.goalX = x;
+      f.goalY = y;
+    }
+  }
+  if (best === -Infinity) {
+    f.goalX = 440;
+    f.goalY = 340;
+  }
+  f.goalT = 9 + rand() * 7;
+}
+
+/** body samples used by the planner (arc position s along the fish, 0 = head) */
+const BODY_S = [0, 0.12, 0.25, 0.37, 0.5, 0.62, 0.75, 0.87, 1];
+const NB = BODY_S.length;
+const bodyHW = new Float32Array(NB * 2);
+const othBX = new Float32Array((PLAN_STEPS + 1) * NB);
+const othBY = new Float32Array((PLAN_STEPS + 1) * NB);
+const myBX = new Float32Array(NB);
+const myBY = new Float32Array(NB);
+
+function halfWidthAt(f: Fish, s: number) {
+  return halfWidth(f, clamp(s, 0, 1) * (SPINE_N - 1));
+}
+
+/**
+ * Where body point s sits k plan steps ahead, if the head follows the path hx/hy[0..k]
+ * (hx[0] = head now, step length `step`) and the rest of the body follows the current spine.
+ */
+function bodyPoint(f: Fish, hx: Float32Array, hy: Float32Array, k: number, step: number, s: number, out: Float32Array, outY: Float32Array, o: number) {
+  const L = bodyLen(f);
+  const a = s * L;
+  const onPath = k * step;
+  if (a <= onPath) {
+    const q = k - a / step;
+    const q0 = Math.floor(q);
+    const q1 = Math.min(k, q0 + 1);
+    const t = q - q0;
+    out[o] = hx[q0] + (hx[q1] - hx[q0]) * t;
+    outY[o] = hy[q0] + (hy[q1] - hy[q0]) * t;
+    return;
+  }
+  const j = clamp(((a - onPath) / L) * (SPINE_N - 1), 0, SPINE_N - 1);
+  const j0 = Math.floor(j);
+  const j1 = Math.min(SPINE_N - 1, j0 + 1);
+  const t = j - j0;
+  out[o] = f.spineX[j0] + (f.spineX[j1] - f.spineX[j0]) * t;
+  outY[o] = f.spineY[j0] + (f.spineY[j1] - f.spineY[j0]) * t;
+}
+
+function planTurn(f: Fish, other: Fish, fleeing: boolean, curious: Vec2 | null) {
+  const L = bodyLen(f);
+  const v = clamp(f.speed, 8, fleeing ? 130 : 70);
+  const cap = turnCap(f, v, fleeing);
+  const acc = fleeing ? ANG_ACC_FLEE : ANG_ACC;
+  for (let m = 0; m < NB; m++) {
+    bodyHW[m] = halfWidthAt(f, BODY_S[m]);
+    bodyHW[NB + m] = halfWidthAt(other, BODY_S[m]);
+  }
+  // the other koi, assumed to keep its current turn; its whole body follows its head
+  const ov = Math.max(other.speed, 4);
+  {
+    let x = other.pos.x;
+    let y = other.pos.y;
+    let h = other.heading;
+    othX[0] = x;
+    othY[0] = y;
+    for (let k = 1; k <= PLAN_STEPS; k++) {
+      h += other.turnRate * PLAN_DT;
+      x += Math.cos(h) * ov * PLAN_DT;
+      y += Math.sin(h) * ov * PLAN_DT;
+      othX[k] = x;
+      othY[k] = y;
+    }
+    for (let k = 0; k <= PLAN_STEPS; k++)
+      for (let m = 0; m < NB; m++) bodyPoint(other, othX, othY, k, ov * PLAN_DT, BODY_S[m], othBX, othBY, k * NB + m);
+  }
+  // keep more room at speed (a darting koi needs it to turn away in time)
+  const WANT_G = 40 + 0.3 * (v + ov);
+  const gNow = fishGap(f, other).gap;
+  let best = Infinity;
+  let bestW = f.planW;
+  let bestG = Infinity;
+  let bestHit = 99;
+  planX[0] = f.pos.x;
+  planY[0] = f.pos.y;
+  for (let c = 0; c < PLAN_CANDS; c++) {
+    const wc = -cap + (2 * cap * c) / (PLAN_CANDS - 1);
+    let x = f.pos.x;
+    let y = f.pos.y;
+    let h = f.heading;
+    let w = f.turnRate;
+    let cost = 0;
+    let minG = Infinity;
+    let hitK = 99;
+    for (let k = 1; k <= PLAN_STEPS; k++) {
+      w += clamp(wc - w, -acc * PLAN_DT, acc * PLAN_DT);
+      h += w * PLAN_DT;
+      x += Math.cos(h) * v * PLAN_DT;
+      y += Math.sin(h) * v * PLAN_DT;
+      planX[k] = x;
+      planY[k] = y;
+      const wk = 1 / (1 + 0.12 * k);
+      cost += wk * placeCost(x, y, L);
+      if (k % 2 && k > 1) continue;
+      // whole future body vs the lotus corner and vs the other koi's whole future body
+      let g = Infinity;
+      let lg = Infinity;
+      for (let m = 0; m < NB; m++) {
+        bodyPoint(f, planX, planY, k, v * PLAN_DT, BODY_S[m], myBX, myBY, m);
+        lg = Math.min(lg, lotusSdf(myBX[m], myBY[m]).d - bodyHW[m]);
+      }
+      for (let m = 0; m < NB; m++) {
+        for (let n = 0; n < NB; n++) {
+          const o = k * NB + n;
+          g = Math.min(g, Math.hypot(myBX[m] - othBX[o], myBY[m] - othBY[o]) - bodyHW[m] - bodyHW[NB + n]);
+        }
+      }
+      const kw = wk * 2;
+      if (lg < 30) cost += kw * 40 * ((30 - lg) / 30) ** 2 + (lg < LOTUS_MARGIN + 2 ? kw * 250 : 0);
+      minG = Math.min(minG, g);
+      if (g < MIN_GAP + 1 && g < gNow - 1 && hitK > k) hitK = k;
+      if (g < WANT_G) {
+        cost += kw * 120 * ((WANT_G - g) / WANT_G) ** 2;
+        if (g < MIN_GAP + 3) cost += kw * (80 + 4 * (MIN_GAP + 3 - g));
+      }
+    }
+    // keep going straight from the end: is there room ahead?
+    for (const s of [0.5, 1]) cost += 0.5 * placeCost(x + Math.cos(h) * L * s, y + Math.sin(h) * L * s, L);
+    // purpose
+    if (fleeing && lotusSdf(x, y).d < L * 0.6) cost += 300;
+    if (fleeing) cost -= 3 * Math.min(1, Math.hypot(x - f.fleeX, y - f.fleeY) / 260);
+    else if (curious) cost += 2 * Math.min(1, Math.hypot(x - curious.x, y - curious.y) / 300);
+    else cost += 1.2 * Math.min(1, Math.hypot(x - f.goalX, y - f.goalY) / 420);
+    // calm, decisive turning: prefer gentle arcs and sticking with the last choice
+    cost += 0.35 * (wc - f.planW) ** 2 + 0.1 * wc * wc;
+    if (cost < best) {
+      best = cost;
+      bestW = wc;
+      bestG = minG;
+      bestHit = hitK;
+    }
+  }
+  f.planW = bestW;
+  f.room = clamp(bestG / WANT_G, 0, 1);
+  // even the best arc touches the other koi within ~0.4 s: ease off and let it pass
+  f.blocked = bestHit <= 2 || (fleeing && bestG < 40);
+}
+
 
 function steerFish(sim: SimState, f: Fish, other: Fish, dt: number) {
   const speedMul = sim.reduced ? 0.4 : 1;
-  const L = bodyLen(f);
-  let desireX = 0;
-  let desireY = 0;
-  let wSum = 0;
 
-  // wander circle
-  f.wanderTheta += (0.35 + noise1(sim.time * 0.3, f.noiseSeed)) * dt;
-  const wx = f.pos.x + Math.cos(f.heading) * 90;
-  const wy = f.pos.y + Math.sin(f.heading) * 90;
-  const wtx = wx + Math.cos(f.wanderTheta) * 40;
-  const wty = wy + Math.sin(f.wanderTheta) * 40;
-  let n = norm(wtx - f.pos.x, wty - f.pos.y);
-  desireX += n.x;
-  desireY += n.y;
-  wSum += 1;
-
-  // containment
-  const look = 1.2 * L;
-  const lx = f.pos.x + Math.cos(f.heading) * look;
-  const ly = f.pos.y + Math.sin(f.heading) * look;
-  if (!inWater(lx, ly) || !inWater(f.pos.x, f.pos.y)) {
-    n = norm(W * 0.5 - f.pos.x, H * 0.55 - f.pos.y);
-    desireX += n.x * 6;
-    desireY += n.y * 6;
-    wSum += 6;
-  }
-  // lotus corner: predictive keep-out for the head path and the whole current outline
-  {
-    let worst = Infinity;
-    let wx = 0;
-    let wy = 0;
-    for (const k of [0, 0.4, 0.8, 1.2]) {
-      const sd = lotusSdf(f.pos.x + Math.cos(f.heading) * L * k, f.pos.y + Math.sin(f.heading) * L * k);
-      const g = sd.d - L * 0.35;
-      if (g < worst) {
-        worst = g;
-        wx = sd.nx;
-        wy = sd.ny;
-      }
-    }
-    for (let i = 0; i < SPINE_N; i += 3) {
-      const sd = lotusSdf(f.spineX[i], f.spineY[i]);
-      const g = sd.d - halfWidth(f, i) - 20;
-      if (g < worst) {
-        worst = g;
-        wx = sd.nx;
-        wy = sd.ny;
-      }
-    }
-    const zone = L * 0.5;
-    if (worst < zone) {
-      const w = 10 * Math.pow(1 - Math.max(-zone, worst) / zone, 2);
-      desireX += wx * w;
-      desireY += wy * w;
-      wSum += w;
-    }
-  }
-
-  // separation — predictive and body-aware: every spine point of this fish (now and ~0.8s
-  // ahead) against every spine point of the other, using the real body/veil half-widths.
-  {
-    const ahead = 0.8;
-    const fvx = Math.cos(f.heading) * f.speed * ahead;
-    const fvy = Math.sin(f.heading) * f.speed * ahead;
-    const ovx = Math.cos(other.heading) * other.speed * ahead;
-    const ovy = Math.sin(other.heading) * other.speed * ahead;
-    let best = Infinity;
-    let ax = 0;
-    let ay = 0;
-    for (let i = 0; i < SPINE_N; i += 1) {
-      // head region is what steers, so weight the front half more
-      const wi = i < SPINE_N / 2 ? 1 : 0.6;
-      for (let j = 0; j < SPINE_N; j += 1) {
-        for (let k = 0; k < 2; k++) {
-          const px = f.spineX[i] + (k ? fvx : 0);
-          const py = f.spineY[i] + (k ? fvy : 0);
-          const qx = other.spineX[j] + (k ? ovx : 0);
-          const qy = other.spineY[j] + (k ? ovy : 0);
-          const gap = (Math.hypot(px - qx, py - qy) - halfWidth(f, i) - halfWidth(other, j)) / wi;
-          if (gap < best) {
-            best = gap;
-            ax = px - qx;
-            ay = py - qy;
-          }
-        }
-      }
-    }
-    const zone = L * 0.7;
-    if (best < zone) {
-      n = norm(ax, ay);
-      const w = 12 * Math.pow(1 - Math.max(-zone, best) / zone, 2);
-      desireX += n.x * w;
-      desireY += n.y * w;
-      wSum += w;
-      if (best < zone * 0.4) f.burstT = Math.max(f.burstT, 0.4);
-    } else {
-      const dist = Math.hypot(f.pos.x - other.pos.x, f.pos.y - other.pos.y);
-      if (dist < L * 2.4) {
-        // loose companionship: drift roughly the same way, never toward each other
-        desireX += Math.cos(other.heading) * 0.25;
-        desireY += Math.sin(other.heading) * 0.25;
-        wSum += 0.25;
-      }
-    }
-  }
-
-  // flee
-  let fleeing = f.fleeT > 0;
+  // flee: a fast flick of the pointer near the fish (a click calls pokeAt)
   if (sim.pointer && !sim.reduced && sim.pointerVel > FLEE_SPEED) {
     const pd = Math.hypot(f.pos.x - sim.pointer.x, f.pos.y - sim.pointer.y);
-    if (pd < FLEE_RADIUS) {
-      f.fleeT = Math.max(f.fleeT, 1.6);
-      f.burstT = Math.max(f.burstT, 0.9);
-      f.curiousT = 0;
-      fleeing = true;
-    }
+    const od = Math.hypot(other.pos.x - sim.pointer.x, other.pos.y - sim.pointer.y);
+    if (pd < FLEE_RADIUS && pd <= od && f.fleeT <= -2) startFlee(f, sim.pointer.x, sim.pointer.y);
   }
-  if (fleeing && sim.pointer) {
-    n = norm(f.pos.x - sim.pointer.x, f.pos.y - sim.pointer.y);
-    desireX += n.x * 3.5;
-    desireY += n.y * 3.5;
-    wSum += 3.5;
-  }
+  const fleeing = f.fleeT > 0;
 
-  // curiosity
-  if (!fleeing && sim.pointer && sim.pointerStill > CURIOSITY_STILL && lotusSdf(sim.pointer.x, sim.pointer.y).d > bodyLen(f) * 0.45) {
+  // curiosity: the nearer koi comes to look at a pointer held still
+  let curious: Vec2 | null = null;
+  const L = bodyLen(f);
+  if (!fleeing && sim.pointer && sim.pointerStill > CURIOSITY_STILL && lotusSdf(sim.pointer.x, sim.pointer.y).d > L * 0.45) {
     const pd = Math.hypot(f.pos.x - sim.pointer.x, f.pos.y - sim.pointer.y);
     const od = Math.hypot(other.pos.x - sim.pointer.x, other.pos.y - sim.pointer.y);
-    // only the nearer koi comes to look; the other keeps its distance (never into the lotus)
     if ((pd < L * 2.5 || f.curiousT > 0) && !(other.curiousT > 0 && od < pd)) {
       f.curiousT += dt;
-      if (f.curiousT < 6) {
-        const ax = sim.pointer.x - f.pos.x;
-        const ay = sim.pointer.y - f.pos.y;
-        const ad = Math.hypot(ax, ay);
-        if (ad > HOVER_DIST) {
-          n = norm(ax, ay);
-          desireX += n.x * 1.6;
-          desireY += n.y * 1.6;
-          wSum += 1.6;
-        } else {
-          f.turnRate += (clamp(angDiff(f.heading, Math.atan2(ay, ax)) * 1.2, -0.6, 0.6) - f.turnRate) * 0.05;
-          f.burstT = 0;
-          f.glideT = 1;
-        }
-      } else {
-        f.curiousT = -3;
-      }
+      if (f.curiousT < 6) curious = sim.pointer;
+      else f.curiousT = -3;
     }
   } else if (f.curiousT < 0) {
-    f.curiousT += dt;
-    if (f.curiousT > 0) f.curiousT = 0;
+    f.curiousT = Math.min(0, f.curiousT + dt);
+  } else if (f.curiousT > 0) {
+    f.curiousT = 0;
   }
 
-  if (wSum > 1e-5) {
-    desireX /= wSum;
-    desireY /= wSum;
+  // wander goal
+  f.goalT -= dt;
+  if (f.goalT <= 0 || Math.hypot(f.goalX - f.pos.x, f.goalY - f.pos.y) < 90) pickGoal(f, other);
+
+  f.planT -= dt;
+  if (f.planT <= 0) {
+    planTurn(f, other, fleeing, curious);
+    f.planT += PLAN_EVERY;
+    if (f.planT <= 0) f.planT = PLAN_EVERY;
+    // reflex: head close to the paper edge or the lotus and pointing at it → full turn away
+    const capNow = turnCap(f, Math.max(f.speed, 1), fleeing);
+    const sd = lotusSdf(f.pos.x, f.pos.y);
+    let away = NaN;
+    if (sd.d < L * 0.4 && Math.cos(f.heading) * sd.nx + Math.sin(f.heading) * sd.ny < 0.2) away = Math.atan2(sd.ny, sd.nx);
+    else if (edgeClear(f.pos.x, f.pos.y) < 70) away = Math.atan2(320 - f.pos.y, 400 - f.pos.x);
+    if (Number.isNaN(away) && f.headThreat) away = Math.atan2(f.pos.y - other.pos.y, f.pos.x - other.pos.x);
+    if (!Number.isNaN(away)) {
+      const e = angDiff(f.heading, away);
+      if (Math.abs(e) > 1.0) f.planW = Math.sign(e) * capNow;
+    }
   }
-  const desiredAng = Math.atan2(desireY, desireX);
-  // koi turn by bending: the tightest path radius is ~0.3 body lengths, and the turn rate
-  // eases in/out (no snapping). Slow fish can still pivot a little.
-  const rMin = L * (fleeing ? 0.22 : 0.3);
-  const turnCap = Math.min(fleeing ? 3.0 : TURN_MAX, Math.max(0.6, f.speed / rMin));
-  const err = angDiff(f.heading, desiredAng);
-  const wantRate = clamp(err * 1.6, -turnCap, turnCap);
-  f.turnRate += (wantRate - f.turnRate) * Math.min(1, dt * (fleeing ? 8 : 3));
+
+  // turn rate eases toward the plan (bounded angular acceleration → no heading snaps)
+  const acc = fleeing ? ANG_ACC_FLEE : ANG_ACC;
+  f.turnRate += clamp(f.planW - f.turnRate, -acc * dt, acc * dt);
+  const cap = turnCap(f, Math.max(f.speed, 1), fleeing);
+  if (Math.abs(f.turnRate) > cap) f.turnRate += (Math.sign(f.turnRate) * cap - f.turnRate) * Math.min(1, dt * 4);
   f.heading += f.turnRate * dt;
 
+  // look ahead along the heading: a koi slows down before the pond edge / lotus, so it
+  // always has room to turn away (slow fish turn tighter)
+  let ahead = 320;
+  for (let d = 20; d <= 320; d += 20) {
+    const x = f.pos.x + Math.cos(f.heading) * d;
+    const y = f.pos.y + Math.sin(f.heading) * d;
+    if (edgeClear(x, y) < 50 || lotusSdf(x, y).d < L * 0.35) {
+      ahead = d - 20;
+      break;
+    }
+  }
+  const vAhead = Math.max(10, ahead * 0.3);
+
   // burst / glide rhythm
+  const tight = f.blocked;
   if (sim.reduced) {
     f.speed = lerp(f.speed, SPEED_GLIDE_MIN * 1.2, dt * 2);
     f.beatEnergy = 0.2;
-  } else if (fleeing) {
-    f.speed = lerp(f.speed, SPEED_BURST * (fleeing ? 1.15 : 1), dt * 3);
-    f.beatEnergy = lerp(f.beatEnergy, 1, dt * 4);
-    f.burstT = Math.max(f.burstT, 0.3);
-  } else if (f.curiousT > 0 && f.glideT > 0) {
-    f.speed = lerp(f.speed, 14, dt * 2);
-    f.beatEnergy = lerp(f.beatEnergy, 0.25, dt * 2);
-  } else if (f.burstT > 0) {
+  } else if (fleeing && !f.headThreat && !tight) {
+    f.speed = lerp(f.speed, SPEED_FLEE, dt * 5);
+    f.beatEnergy = lerp(f.beatEnergy, 1, dt * 6);
+    f.burstT = 0;
+    f.glideT = 1.5;
+  } else if (curious && Math.hypot(curious.x - f.pos.x, curious.y - f.pos.y) < HOVER_DIST * 2.5) {
+    f.speed = lerp(f.speed, 8, dt * 1.5);
+    f.beatEnergy = lerp(f.beatEnergy, 0.2, dt * 2);
+  } else if (f.burstT > 0 && !tight) {
     f.burstT -= dt;
-    f.speed = lerp(f.speed, SPEED_BURST, dt * 4);
-    f.beatEnergy = lerp(f.beatEnergy, 1, dt * 5);
-    if (f.burstT <= 0) f.glideT = 1 + Math.random() * 1.5;
+    f.speed = lerp(f.speed, SPEED_BURST, dt * 2.5);
+    f.beatEnergy = lerp(f.beatEnergy, 1, dt * 4);
+    if (f.burstT <= 0) f.glideT = 1.2 + rand() * 1.8;
   } else {
+    f.burstT = 0;
     f.glideT -= dt;
-    f.speed = Math.max(SPEED_GLIDE_MIN, f.speed - 20 * dt);
-    f.beatEnergy = lerp(f.beatEnergy, 0.15, dt * 1.5);
-    if (f.glideT <= 0) f.burstT = 0.35 + Math.random() * 0.55; // 2–4 quick beats ≈ 0.4–0.9s
+    const floor = tight ? 5 : SPEED_GLIDE_MIN;
+    f.speed = f.speed > floor ? Math.max(floor, f.speed - (tight ? 30 : 14) * dt) : lerp(f.speed, floor, dt * 1.5);
+    f.beatEnergy = lerp(f.beatEnergy, 0.2, dt * 1.5);
+    if (f.glideT <= 0 && !tight) f.burstT = 0.5 + rand() * 0.7;
   }
 
+  if (!fleeing && f.speed > vAhead) f.speed = Math.max(vAhead, f.speed - 40 * dt);
+  // every arc still meets the other koi soon, or the head is closing in on it: ease right off
+  // (it swims on and clears the way)
+  if ((tight || f.headThreat) && f.speed > 5) f.speed = Math.max(5, f.speed - 150 * dt);
   f.speed *= speedMul;
   f.vel.x = Math.cos(f.heading) * f.speed;
   f.vel.y = Math.sin(f.heading) * f.speed;
@@ -673,7 +822,7 @@ function steerFish(sim: SimState, f: Fish, other: Fish, dt: number) {
     initSpine(f);
   }
 
-  const freq = lerp(0.55, 1.9, f.beatEnergy) * (fleeing ? 1.6 : 1) * (sim.reduced ? 0.45 : 1);
+  const freq = lerp(0.6, 1.9, f.beatEnergy) * (fleeing ? 1.5 : 1) * (sim.reduced ? 0.45 : 1);
   f.phase += TWO_PI * freq * dt;
 
   // water motion from swimming — continuous trail + beat pulses at the veil tip
@@ -711,22 +860,30 @@ function steerFish(sim: SimState, f: Fish, other: Fish, dt: number) {
   }
   if (wave < 0.15) f.wakeReady = false;
 
-  // depth drift
-  // keep most time near the surface so colour matches the painting
+  // depth drift — mostly near the surface so the colour matches the painting
   const dTarget = 0.05 + 0.28 * (0.5 + 0.5 * noise1(sim.time * 0.06, f.noiseSeed + 2));
   f.depth += (dTarget - f.depth) * dt * 0.3;
 
-  // pectorals: fold on burst, spread on glide/turn (~55°)
-  const turning = Math.abs(angDiff(f.heading, desiredAng)) > 0.2;
+  // pectorals: tucked on burst, spread on glide/turn, slow sculling paddle
+  const turning = Math.abs(f.turnRate) > 0.25;
   const bursting = f.burstT > 0 || fleeing;
-  // glide: slow sculling paddle; burst: tucked; turn/curious: braking spread
   const paddle = 0.12 * Math.sin(sim.time * 2.3 + f.noiseSeed * 5);
-  const want = bursting ? 0.12 : turning || f.curiousT > 0 ? 0.95 : 0.6 + paddle;
+  // fins fold in when the other koi is close, so they never brush it
+  const crowded = sim.lastGap < 40;
+  const want = bursting || crowded ? 0.12 : turning || curious ? 0.95 : 0.6 + paddle;
   f.finL += (want - f.finL) * dt * 6;
   f.finR += (want - (turning ? paddle : -paddle) - f.finR) * dt * 6;
 
-  if (f.fleeT > 0) f.fleeT -= dt;
+  if (f.fleeT > -3) f.fleeT -= dt;
   f.headScale += (1 - f.headScale) * dt * 5;
+}
+
+function startFlee(f: Fish, x: number, y: number) {
+  f.fleeT = 1.1;
+  f.fleeX = x;
+  f.fleeY = y;
+  f.curiousT = 0;
+  f.planT = 0; // replan right away
 }
 
 function updateSpine(f: Fish) {
@@ -839,15 +996,21 @@ function layoutSpine(f: Fish, snap: boolean) {
   }
 }
 
+/** A click in the water: koi within reach dart away from it, then calm down. */
+/** A click in the water: the nearer koi (if within reach) darts away from it, then calms down. */
 export function pokeAt(sim: SimState, x: number, y: number) {
-  sim.pendingDrops.push({ x: x / W, y: y / H, r: 0.05, s: 0.35 });
+  if (sim.reduced) return;
+  let best: Fish | null = null;
+  let bestD = FLEE_RADIUS;
   for (const f of sim.fish) {
-    if (Math.hypot(f.pos.x - x, f.pos.y - y) < FLEE_RADIUS) {
-      f.fleeT = 1.8;
-      f.burstT = 1;
-      f.curiousT = 0;
+    let near = Math.hypot(f.pos.x - x, f.pos.y - y);
+    for (let i = 0; i < SPINE_N; i += 3) near = Math.min(near, Math.hypot(f.spineX[i] - x, f.spineY[i] - y));
+    if (near < bestD) {
+      bestD = near;
+      best = f;
     }
   }
+  if (best) startFlee(best, x, y);
 }
 
 export function setPointer(sim: SimState, p: Vec2 | null, vel: number) {
@@ -875,12 +1038,23 @@ export function stepSim(sim: SimState, dt: number, acc: number): number {
   for (let steps = 0; steps < n; steps++) {
     sim.time += h;
     if (sim.pointer && sim.pointerVel < 40) sim.pointerStill += h;
+    {
+      const [a, b] = sim.fish;
+      const g = fishGap(a, b);
+      const closing = g.gap < sim.lastGap - 1e-3;
+      a.headThreat = closing && g.gap < 28 && g.i <= 5 && !(g.j <= 5 && b.speed < a.speed - 10);
+      b.headThreat = closing && g.gap < 28 && g.j <= 5 && !(g.i <= 5 && a.speed < b.speed - 10);
+      sim.lastGap = g.gap;
+    }
     steerFish(sim, sim.fish[0], sim.fish[1], h);
     steerFish(sim, sim.fish[1], sim.fish[0], h);
     for (const f of sim.fish) {
       updateSpine(f);
     }
-    for (const f of sim.fish) lotusHard(f);
+    for (const f of sim.fish) {
+      containHard(f);
+      lotusHard(f);
+    }
     separateHard(sim.fish[0], sim.fish[1]);
   }
   return 0;
