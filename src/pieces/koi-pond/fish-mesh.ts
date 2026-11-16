@@ -1,79 +1,42 @@
 import * as THREE from "three";
-import { KOI_LEN, S_TAIL_ROOT, SPINE_N, TAIL_N, type Fish, W, H } from "./sim";
+import { KOI_LEN, SPINE_N, type Fish, W, H } from "./sim";
 
-const ALONG = 64;
-const ACROSS = 10;
+/**
+ * The koi is the koi.png sprite itself (pastel strokes, scales, feathery veil), mapped onto a
+ * ribbon that bends along the simulated spine. No procedural silhouette: the sprite's own alpha
+ * gives the shape, so what you see is exactly the painted fish, just swimming.
+ */
+
+const ALONG = 72;
+const ACROSS = 12;
 const VERTS = (ALONG + 1) * (ACROSS + 1);
+/** koi.png alpha bbox = 1014 × 510 of 1024 × 512 → ribbon half-height in body lengths */
+const SPRITE_U1 = 1014 / 1024;
+const HALF_H = (510 / 1014) * 0.5;
 
 function toNdc(x: number, y: number): [number, number] {
   return [(x / W) * 2 - 1, 1 - (y / H) * 2];
 }
 
-function catmull(
-  p0x: number, p0y: number, p1x: number, p1y: number,
-  p2x: number, p2y: number, p3x: number, p3y: number, t: number,
-): [number, number] {
-  const t2 = t * t;
-  const t3 = t2 * t;
-  return [
-    0.5 * (2 * p1x + (-p0x + p2x) * t + (2 * p0x - 5 * p1x + 4 * p2x - p3x) * t2 + (-p0x + 3 * p1x - 3 * p2x + p3x) * t3),
-    0.5 * (2 * p1y + (-p0y + p2y) * t + (2 * p0y - 5 * p1y + 4 * p2y - p3y) * t2 + (-p0y + 3 * p1y - 3 * p2y + p3y) * t3),
-  ];
-}
-
 function sampleSpine(f: Fish, s: number) {
-  const fIdx = Math.max(0, Math.min(1, s)) * (SPINE_N - 1);
-  let i = Math.floor(fIdx);
-  const t = fIdx - i;
+  const fi = Math.max(0, Math.min(1, s)) * (SPINE_N - 1);
+  let i = Math.floor(fi);
   if (i > SPINE_N - 2) i = SPINE_N - 2;
+  const t = fi - i;
+  // Catmull-Rom through spine points for a smooth, kink-free centreline
   const i0 = Math.max(0, i - 1);
-  const i1 = i;
-  const i2 = Math.min(SPINE_N - 1, i + 1);
   const i3 = Math.min(SPINE_N - 1, i + 2);
-  const [x, y] = catmull(
-    f.spineX[i0], f.spineY[i0], f.spineX[i1], f.spineY[i1],
-    f.spineX[i2], f.spineY[i2], f.spineX[i3], f.spineY[i3], t,
-  );
-  let tx = f.tanX[i1] + (f.tanX[i2] - f.tanX[i1]) * t;
-  let ty = f.tanY[i1] + (f.tanY[i2] - f.tanY[i1]) * t;
-  const len = Math.hypot(tx, ty) || 1;
-  tx /= len;
-  ty /= len;
-  const lat = f.lat[i1] + (f.lat[i2] - f.lat[i1]) * t;
-  return { x, y, tx, ty, lat };
-}
-
-function sampleTail(f: Fish, s: number, v: number): [number, number] {
-  const ts = Math.max(0, Math.min(1, (s - S_TAIL_ROOT) / Math.max(1e-4, 1 - S_TAIL_ROOT)));
-  const fIdx = ts * (TAIL_N - 1);
-  let i = Math.floor(fIdx);
-  const t = fIdx - i;
-  if (i > TAIL_N - 2) i = TAIL_N - 2;
-  const ux = f.tailUX[i] + (f.tailUX[i + 1] - f.tailUX[i]) * t;
-  const uy = f.tailUY[i] + (f.tailUY[i + 1] - f.tailUY[i]) * t;
-  const lx = f.tailLX[i] + (f.tailLX[i + 1] - f.tailLX[i]) * t;
-  const ly = f.tailLY[i] + (f.tailLY[i + 1] - f.tailLY[i]) * t;
-  const w = (v + 1) * 0.5;
-  return [lx + (ux - lx) * w, ly + (uy - ly) * w];
-}
-
-function smoothstep(e0: number, e1: number, x: number) {
-  const t = Math.max(0, Math.min(1, (x - e0) / (e1 - e0)));
-  return t * t * (3 - 2 * t);
-}
-
-function lerp(a: number, b: number, t: number) {
-  return a + (b - a) * Math.max(0, Math.min(1, t));
-}
-
-/** Half-width multiplier along s — matched to koi.png / pair-pose silhouette. */
-function profileHalf(s: number) {
-  if (s < 0.08) return 0.7 + s * 4.0;
-  if (s < 0.28) return 1.1;
-  if (s < S_TAIL_ROOT) return lerp(1.1, 0.45, (s - 0.28) / (S_TAIL_ROOT - 0.28));
-  // veil flares hard (pair-pose flame tips)
-  const t = (s - S_TAIL_ROOT) / Math.max(1e-4, 1 - S_TAIL_ROOT);
-  return lerp(0.55, 1.55, t * t);
+  const cr = (p0: number, p1: number, p2: number, p3: number) =>
+    0.5 * (2 * p1 + (-p0 + p2) * t + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t * t + (-p0 + 3 * p1 - 3 * p2 + p3) * t * t * t);
+  const x = cr(f.spineX[i0], f.spineX[i], f.spineX[i + 1], f.spineX[i3]);
+  const y = cr(f.spineY[i0], f.spineY[i], f.spineY[i + 1], f.spineY[i3]);
+  let tx = f.tanX[i] + (f.tanX[i + 1] - f.tanX[i]) * t;
+  let ty = f.tanY[i] + (f.tanY[i + 1] - f.tanY[i]) * t;
+  const l = Math.hypot(tx, ty) || 1;
+  tx /= l;
+  ty /= l;
+  const k = f.curv[i] + (f.curv[i + 1] - f.curv[i]) * t;
+  return { x, y, tx, ty, k };
 }
 
 function spriteMat(tex: THREE.Texture) {
@@ -82,18 +45,11 @@ function spriteMat(tex: THREE.Texture) {
     transparent: true,
     depthTest: false,
     depthWrite: false,
-    alphaTest: 0.015,
     side: THREE.DoubleSide,
   });
 }
 
-export type FishBody = {
-  mesh: THREE.Mesh;
-  mat: THREE.MeshBasicMaterial;
-  pos: Float32Array;
-  restS: Float32Array;
-  restV: Float32Array;
-};
+export type FishBody = { mesh: THREE.Mesh; mat: THREE.MeshBasicMaterial; pos: Float32Array; restS: Float32Array; restV: Float32Array };
 
 export function createFishBody(tex: THREE.Texture): FishBody {
   const pos = new Float32Array(VERTS * 3);
@@ -108,12 +64,8 @@ export function createFishBody(tex: THREE.Texture): FishBody {
       const v = (j / ACROSS) * 2 - 1;
       restS[vi] = s;
       restV[vi] = v;
-      pos[vi * 3] = 0;
-      pos[vi * 3 + 1] = 0;
-      pos[vi * 3 + 2] = 0;
-      // head at +x (right) → u reversed; v covers body + the wide veil in the sprite
-      uvs[vi * 2] = 1 - s;
-      uvs[vi * 2 + 1] = 0.5 + v * 0.34;
+      uvs[vi * 2] = SPRITE_U1 * (1 - s); // head is at the right of the sprite
+      uvs[vi * 2 + 1] = 0.5 + v * 0.5;
       vi++;
     }
   }
@@ -121,10 +73,7 @@ export function createFishBody(tex: THREE.Texture): FishBody {
   for (let j = 0; j < ACROSS; j++) {
     for (let i = 0; i < ALONG; i++) {
       const a = j * stride + i;
-      const b = a + 1;
-      const c = a + stride;
-      const d = c + 1;
-      indices.push(a, c, b, b, c, d);
+      indices.push(a, a + stride, a + 1, a + 1, a + stride, a + stride + 1);
     }
   }
   const geo = new THREE.BufferGeometry();
@@ -139,99 +88,54 @@ export function createFishBody(tex: THREE.Texture): FishBody {
 
 export function updateFishBody(body: FishBody, f: Fish) {
   const L = KOI_LEN * f.scale * (1 - f.depth * 0.06);
-  // pair-pose mass: thick continuous body — one spine, no body/tail seam
-  const halfW0 = L * 0.22;
-  const bank = Math.max(-1, Math.min(1, f.turnRate / 1.6));
+  const hh = L * HALF_H;
   const { pos, restS, restV } = body;
-
-  for (let i = 0; i < VERTS; i++) {
+  const stride = ALONG + 1;
+  for (let i = 0; i <= ALONG; i++) {
+    const sp = sampleSpine(f, restS[i]);
+    // koi.png is slimmer than the plump koi in the painting: fatten the body, flare the veil a bit
     const s = restS[i];
-    const v = restV[i];
-    // one continuous spine for the whole length (including veil)
-    const sp = sampleSpine(f, s);
+    const plump = s < 0.62 ? 1.45 - 0.25 * Math.max(0, (s - 0.45) / 0.17) : 1.2 + 0.15 * (s - 0.62) / 0.38;
     const nx = -sp.ty;
     const ny = sp.tx;
-    const inner =
-      Math.sign(bank) === Math.sign(v) && Math.abs(bank) > 0.01
-        ? 1 - Math.abs(bank) * 0.08
-        : 1;
-    let halfW = halfW0 * profileHalf(s) * inner;
-
-    // veil: widen with Verlet lobe separation + soft lag toward tip
-    let lagX = 0;
-    let lagY = 0;
-    if (s > S_TAIL_ROOT) {
-      const [tx, ty] = sampleTail(f, s, v);
-      const spineW = halfW;
-      // world offset from centreline implied by verlet sample
-      const cx = sp.x + nx * sp.lat;
-      const cy = sp.y + ny * sp.lat;
-      const ox = tx - cx;
-      const oy = ty - cy;
-      const along = Math.max(0, (s - S_TAIL_ROOT) / (1 - S_TAIL_ROOT));
-      // blend in lobe width + lag so the veil trails without tearing the mesh
-      const lobe = Math.hypot(ox, oy);
-      halfW = lerp(spineW, Math.max(spineW, lobe), 0.35 + 0.65 * along);
-      lagX = ox * along * 0.55;
-      lagY = oy * along * 0.55;
+    // radius of curvature; the inner side of a bend is compressed smoothly so it never folds
+    const R = 1 / Math.max(Math.abs(sp.k), 1e-5);
+    const innerSign = sp.k > 0 ? -1 : 1;
+    for (let j = 0; j <= ACROSS; j++) {
+      const vi = j * stride + i;
+      let w = restV[vi] * hh * plump;
+      if (Math.sign(w) === innerSign && Math.abs(w) > 0) {
+        const lim = R * 0.85;
+        w = Math.sign(w) * lim * Math.tanh(Math.abs(w) / lim);
+      }
+      const hs = restS[i] < 0.12 ? f.headScale : 1;
+      const [x, y] = toNdc(sp.x + nx * w * hs, sp.y + ny * w * hs);
+      pos[vi * 3] = x;
+      pos[vi * 3 + 1] = y;
+      pos[vi * 3 + 2] = 0;
     }
-
-    let wx = sp.x + nx * (v * halfW + sp.lat) + lagX;
-    let wy = sp.y + ny * (v * halfW + sp.lat) + lagY;
-    if (s < 0.08) {
-      wx = sp.x + (wx - sp.x) * f.headScale;
-      wy = sp.y + (wy - sp.y) * f.headScale;
-    }
-    const [ndx, ndy] = toNdc(wx, wy);
-    pos[i * 3] = ndx;
-    pos[i * 3 + 1] = ndy;
-    pos[i * 3 + 2] = 0;
   }
   (body.mesh.geometry.getAttribute("position") as THREE.BufferAttribute).needsUpdate = true;
-  body.mesh.geometry.computeBoundingSphere();
-
-  const d = f.depth;
-  const red = f.tint;
-  let r = 1.1 + red * 0.1;
-  let g = 1.0 - red * 0.04;
-  let b = 0.94 - red * 0.03;
-  const tm = d * 0.06;
-  r = r * (1 - tm) + 0.22 * tm;
-  g = g * (1 - tm) + 0.42 * tm;
-  b = b * (1 - tm) + 0.48 * tm;
-  if (Math.abs(bank) > 0.05) {
-    const shade = 1 - Math.abs(bank) * 0.04;
-    r *= shade;
-    g *= shade;
-    b *= shade;
-  }
-  body.mat.color.setRGB(r, g, b);
-  body.mat.opacity = 1;
+  // painted colours as-is; only a whisper of water tint when the fish drifts deeper
+  const d = Math.max(0, f.depth - 0.1) * 0.25;
+  body.mat.color.setRGB(1 - d * 0.5, 1 - d * 0.25, 1 - d * 0.15);
 }
 
-export type FinFan = {
-  mesh: THREE.Mesh;
-  mat: THREE.MeshBasicMaterial;
-  pos: Float32Array;
-};
+export type FinFan = { mesh: THREE.Mesh; mat: THREE.MeshBasicMaterial; pos: Float32Array };
 
-/** Pectoral fin from fin.webp (base on left edge, fans right) — 4×3 strip. */
+/** Pectoral fin cut from koi-pair-pose.png (root on the left, tip to the right). */
+const FIN_ASPECT = 72 / 153;
 export function createFinFan(tex: THREE.Texture): FinFan {
-  const cols = 4;
-  const rows = 3;
+  const cols = 6;
+  const rows = 2;
   const pos = new Float32Array((cols + 1) * (rows + 1) * 3);
   const uvs = new Float32Array((cols + 1) * (rows + 1) * 2);
   const indices: number[] = [];
   let vi = 0;
   for (let j = 0; j <= rows; j++) {
     for (let i = 0; i <= cols; i++) {
-      const u = i / cols;
-      const v = j / rows;
-      uvs[vi * 2] = u;
-      uvs[vi * 2 + 1] = v;
-      pos[vi * 3] = 0;
-      pos[vi * 3 + 1] = 0;
-      pos[vi * 3 + 2] = 0;
+      uvs[vi * 2] = i / cols;
+      uvs[vi * 2 + 1] = j / rows;
       vi++;
     }
   }
@@ -247,39 +151,42 @@ export function createFinFan(tex: THREE.Texture): FinFan {
   geo.setAttribute("uv", new THREE.BufferAttribute(uvs, 2));
   geo.setIndex(indices);
   const mat = spriteMat(tex);
-  mat.opacity = 0.82;
-  mat.alphaTest = 0.02;
   const mesh = new THREE.Mesh(geo, mat);
   mesh.frustumCulled = false;
   return { mesh, mat, pos };
 }
 
+/**
+ * side = +1 / -1. open 0 (folded against the body) → 1 (spread ~70°).
+ * The fin is rooted on the body edge just behind the head and sweeps back and out,
+ * with a slight curl along its length.
+ */
 export function updateFinFan(fan: FinFan, f: Fish, side: number, open: number) {
   const L = KOI_LEN * f.scale * (1 - f.depth * 0.06);
-  const sp = sampleSpine(f, 0.2);
+  const sp = sampleSpine(f, 0.24);
   const nx = -sp.ty * side;
   const ny = sp.tx * side;
-  const len = L * 0.16;
-  const spread = open; // 0 folded → ~0.96 (~55°)
-  const cols = 4;
-  const rows = 3;
+  const rootOff = L * 0.06;
+  const rx = sp.x + nx * rootOff;
+  const ry = sp.y + ny * rootOff;
+  const len = L * 0.27;
+  const wid = len * FIN_ASPECT * 1.3;
+  const ang = 0.3 + 0.75 * Math.max(0, Math.min(1, open)); // from the tail direction
+  const cols = 6;
+  const rows = 2;
   let vi = 0;
   for (let j = 0; j <= rows; j++) {
     for (let i = 0; i <= cols; i++) {
-      const u = i / cols; // 0 at body → 1 at tip
-      const v = (j / rows) * 2 - 1; // -1..1 across fan
-      const fanW = (0.25 + 0.75 * u) * len * 0.45 * (0.35 + spread);
-      // root at spine, tip swings out with spread; width grows toward tip
-      const x =
-        sp.x +
-        sp.tx * (-u * len * 0.12) +
-        nx * (Math.sin(spread) * u * len) +
-        nx * (v * fanW * 0.5);
-      const y =
-        sp.y +
-        sp.ty * (-u * len * 0.12) +
-        ny * (Math.sin(spread) * u * len) +
-        ny * (v * fanW * 0.5);
+      const u = i / cols;
+      const v = j / rows - 0.5;
+      const a = ang * (1 - 0.25 * u); // tip curls back toward the tail
+      // direction: rotate the backward tangent (-t) toward the fin's side
+      const dx = -sp.tx * Math.cos(a) + nx * Math.sin(a);
+      const dy = -sp.ty * Math.cos(a) + ny * Math.sin(a);
+      const px = -dy * side;
+      const py = dx * side;
+      const x = rx + dx * u * len + px * v * wid * (0.5 + 0.5 * u);
+      const y = ry + dy * u * len + py * v * wid * (0.5 + 0.5 * u);
       const [ndx, ndy] = toNdc(x, y);
       fan.pos[vi * 3] = ndx;
       fan.pos[vi * 3 + 1] = ndy;
@@ -288,9 +195,7 @@ export function updateFinFan(fan: FinFan, f: Fish, side: number, open: number) {
     }
   }
   (fan.mesh.geometry.getAttribute("position") as THREE.BufferAttribute).needsUpdate = true;
-  fan.mat.opacity = 0.82 * (1 - f.depth * 0.08);
-  const red = f.tint;
-  fan.mat.color.setRGB(1.04 + red * 0.05, 0.98 - red * 0.03, 0.92);
+  fan.mat.opacity = 0.8;
 }
 
 export function spineAt(f: Fish, s: number) {
