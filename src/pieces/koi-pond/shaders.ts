@@ -169,11 +169,12 @@ void main() {
   vec2 fishUV = fishUV0 + sdir * nStroke * 1.2 / uRes.x;
   vec4 fish = texture2D(uFish, fishUV);
   float fa = fish.a * mask;
-  fa = max(fa, texture2D(uFish, fishUV + vec2(1.0, 0.0) / uRes).a * mask * 0.4);
+  fa = max(fa, texture2D(uFish, fishUV + vec2(1.0, 0.0) / uRes).a * mask * 0.35);
   float grain = paperGrain(uv);
-  vec3 fishCol = fish.rgb * mix(0.98, 1.05, grain) * vec3(1.08, 1.01, 0.95);
-  fa *= mix(0.96, 1.0, grain);
-  col = mix(col, fishCol, clamp(fa, 0.0, 1.0));
+  // keep bodies opaque and warm so they read as pastel ON the water, not under it
+  vec3 fishCol = fish.rgb * mix(1.0, 1.06, grain) * vec3(1.14, 1.04, 0.92);
+  fa = pow(clamp(fa, 0.0, 1.0), 0.85);
+  col = mix(col, fishCol, fa);
 
   // ochre pellets on water
   for (int i = 0; i < 5; i++) {
