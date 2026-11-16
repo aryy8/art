@@ -66,13 +66,14 @@ function lerp(a: number, b: number, t: number) {
   return a + (b - a) * Math.max(0, Math.min(1, t));
 }
 
+/** Half-width multiplier along s — matched to koi.png / pair-pose silhouette. */
 function profileHalf(s: number) {
-  // fat shoulders just behind the head, taper to peduncle, then mesh width
-  // for the veil is driven mostly by the Verlet lobes
-  if (s < 0.1) return 0.65 + s * 3.2;
-  if (s < 0.32) return 1.05;
-  if (s < S_TAIL_ROOT) return lerp(1.05, 0.42, (s - 0.32) / (S_TAIL_ROOT - 0.32));
-  return lerp(0.7, 1.35, (s - S_TAIL_ROOT) / Math.max(1e-4, 1 - S_TAIL_ROOT));
+  if (s < 0.08) return 0.7 + s * 4.0;
+  if (s < 0.28) return 1.1;
+  if (s < S_TAIL_ROOT) return lerp(1.1, 0.45, (s - 0.28) / (S_TAIL_ROOT - 0.28));
+  // veil flares hard (pair-pose flame tips)
+  const t = (s - S_TAIL_ROOT) / Math.max(1e-4, 1 - S_TAIL_ROOT);
+  return lerp(0.55, 1.55, t * t);
 }
 
 function spriteMat(tex: THREE.Texture) {
@@ -138,35 +139,48 @@ export function createFishBody(tex: THREE.Texture): FishBody {
 
 export function updateFishBody(body: FishBody, f: Fish) {
   const L = KOI_LEN * f.scale * (1 - f.depth * 0.06);
-  // pair-pose: robust body — match painted mass, not a shrimp stick
-  const halfW0 = L * 0.24;
+  // pair-pose mass: thick continuous body — one spine, no body/tail seam
+  const halfW0 = L * 0.22;
   const bank = Math.max(-1, Math.min(1, f.turnRate / 1.6));
   const { pos, restS, restV } = body;
 
   for (let i = 0; i < VERTS; i++) {
     const s = restS[i];
     const v = restV[i];
-    const sp = sampleSpine(f, Math.min(s, S_TAIL_ROOT));
+    // one continuous spine for the whole length (including veil)
+    const sp = sampleSpine(f, s);
     const nx = -sp.ty;
     const ny = sp.tx;
     const inner =
       Math.sign(bank) === Math.sign(v) && Math.abs(bank) > 0.01
         ? 1 - Math.abs(bank) * 0.08
         : 1;
-    const halfW = halfW0 * profileHalf(s) * inner;
-    let bx = sp.x + nx * (v * halfW + sp.lat);
-    let by = sp.y + ny * (v * halfW + sp.lat);
-    if (s < 0.08) {
-      bx = sp.x + (bx - sp.x) * f.headScale;
-      by = sp.y + (by - sp.y) * f.headScale;
-    }
-    let wx = bx;
-    let wy = by;
-    if (s >= S_TAIL_ROOT - 0.02) {
+    let halfW = halfW0 * profileHalf(s) * inner;
+
+    // veil: widen with Verlet lobe separation + soft lag toward tip
+    let lagX = 0;
+    let lagY = 0;
+    if (s > S_TAIL_ROOT) {
       const [tx, ty] = sampleTail(f, s, v);
-      const blend = 1 - smoothstep(S_TAIL_ROOT - 0.02, S_TAIL_ROOT + 0.1, s);
-      wx = tx + (bx - tx) * blend;
-      wy = ty + (by - ty) * blend;
+      const spineW = halfW;
+      // world offset from centreline implied by verlet sample
+      const cx = sp.x + nx * sp.lat;
+      const cy = sp.y + ny * sp.lat;
+      const ox = tx - cx;
+      const oy = ty - cy;
+      const along = Math.max(0, (s - S_TAIL_ROOT) / (1 - S_TAIL_ROOT));
+      // blend in lobe width + lag so the veil trails without tearing the mesh
+      const lobe = Math.hypot(ox, oy);
+      halfW = lerp(spineW, Math.max(spineW, lobe), 0.35 + 0.65 * along);
+      lagX = ox * along * 0.55;
+      lagY = oy * along * 0.55;
+    }
+
+    let wx = sp.x + nx * (v * halfW + sp.lat) + lagX;
+    let wy = sp.y + ny * (v * halfW + sp.lat) + lagY;
+    if (s < 0.08) {
+      wx = sp.x + (wx - sp.x) * f.headScale;
+      wy = sp.y + (wy - sp.y) * f.headScale;
     }
     const [ndx, ndy] = toNdc(wx, wy);
     pos[i * 3] = ndx;
