@@ -203,16 +203,26 @@ function makeFish(x: number, y: number, heading: number, seed: number, scale: nu
   return f;
 }
 
-/** Visible half-width of the painted koi at spine point i (body + fanned veil). */
+/**
+ * Visible half-width of the painted koi (÷ body length) at the 16 spine points, measured from
+ * the koi-final.webp alpha exactly as fish-mesh.ts maps it (incl. its "plump" factor):
+ * head, body, slim peduncle, then the fanned veil that tapers to a soft tip.
+ */
+const HALF_W = [0.033, 0.085, 0.106, 0.123, 0.129, 0.126, 0.12, 0.099, 0.076, 0.055, 0.121, 0.177, 0.215, 0.224, 0.247, 0.075];
 export function halfWidth(f: Fish, i: number) {
   const L = bodyLen(f);
-  const s = i / (SPINE_N - 1);
-  if (s < 0.1) return L * (0.05 + 0.7 * s);
-  // pectoral fins reach ~0.2L out from the body around s 0.2–0.45
-  if (s < 0.5) return L * (0.125 + 0.09 * Math.max(0, 1 - Math.abs(s - 0.32) / 0.16));
-  if (s < S_TAIL_ROOT) return L * 0.125;
-  const t = (s - S_TAIL_ROOT) / (1 - S_TAIL_ROOT);
-  return L * (0.1 + 0.24 * t); // feathery veil fans out to ~0.34L at the tip
+  const k = clamp(i, 0, SPINE_N - 1);
+  const k0 = Math.floor(k);
+  const k1 = Math.min(SPINE_N - 1, k0 + 1);
+  let w = HALF_W[k0] + (HALF_W[k1] - HALF_W[k0]) * (k - k0);
+  // spread pectoral fins (fish-mesh.ts: rooted at s 0.24, 0.27 L long, up to ~70° out)
+  const s = k / (SPINE_N - 1);
+  if (s > 0.2 && s < 0.46) {
+    const open = clamp(Math.max(f.finL, f.finR), 0, 1);
+    const reach = 0.06 + 0.27 * Math.sin(0.3 + 0.75 * open);
+    w = Math.max(w, reach * (1 - Math.abs(s - 0.33) / 0.13));
+  }
+  return L * w;
 }
 
 /** Smallest clearance (px) between the two koi outlines, plus the pair that produced it. */
