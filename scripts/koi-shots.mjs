@@ -1,4 +1,4 @@
-// Koi pond capture with a virtual clock.  node scripts/koi-shots.mjs <outdir> [mode=seq|interact] [frames=24] [stepMs=100]
+// Koi pond capture with a virtual clock.  node scripts/koi-shots.mjs <outdir> [mode=seq|interact|lotus|lure] [frames=24] [stepMs=100]
 import { chromium } from "playwright";
 import fs from "node:fs";
 const [out, mode = "seq", nArg = "24", stepArg = "100"] = process.argv.slice(2);
@@ -28,7 +28,7 @@ const sub = async (ms) => { // advance in 16ms sub-steps so sim runs normally
   for (let t = 0; t < ms; t += 16) { await p.evaluate(() => window.__vclock.step(16)); await frame(); }
 };
 const P = (u, v) => [box.x + box.width * u, box.y + box.height * v];
-if (mode === "interact" || mode === "lotus") {
+if (mode === "interact" || mode === "lotus" || mode === "lure") {
   await p.mouse.click(...P(0.5, 0.5)); await sub(600); // focus
 }
 for (let i = 0; i < N; i++) {
@@ -37,6 +37,10 @@ for (let i = 0; i < N; i++) {
     const k = i / N;
     await p.mouse.move(...P(0.28 + 0.12 * Math.sin(k * 9), 0.33 + 0.08 * Math.cos(k * 7)), { steps: 3 });
     if (i % 4 === 2) await p.mouse.click(...P(0.36, 0.3));
+  }
+  if (mode === "lure" && i === 0) {
+    // hold the pointer still right at the edge of the lotus corner so a koi comes to it
+    await p.mouse.move(...P(0.27, 0.3), { steps: 6 });
   }
   if (mode === "interact") {
     if (i < 8) { const k = i / 8; await p.mouse.move(...P(0.2 + 0.6 * k, 0.45 + 0.1 * Math.sin(k * 6)), { steps: 4 }); }
