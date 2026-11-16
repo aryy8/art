@@ -48,28 +48,28 @@ export const pieces: PieceDefinition[] = [
   //   maxResolution: 2,
   //   load: () => import("./pixel-sea"),
   // },
-  {
-    slug: "ascii-wing",
-    title: "ASCII wing",
-    date: "Nov 2026",
-    // Grid cell (-1, 0): left of sunset
-    x: -2000,
-    y: -250,
-    width: 1000,
-    height: 500,
-    maxResolution: 1.5,
-    load: () => import("./ascii-wing"),
-  },
-  {
-    slug: "snoopy",
-    title: "Sleeping Snoopy",
-    date: "Nov 2026",
-    // Grid cell (0, -1): above sunset
-    x: -520,
-    y: -1900,
-    width: 1040,
-    height: 800,
-    maxResolution: 2,
-    load: () => import("./snoopy"),
-  },
+  // {
+  //   slug: "ascii-wing",
+  //   title: "ASCII wing",
+  //   date: "Nov 2026",
+  //   // Grid cell (-1, 0): left of sunset
+  //   x: -2000,
+  //   y: -250,
+  //   width: 1000,
+  //   height: 500,
+  //   maxResolution: 1.5,
+  //   load: () => import("./ascii-wing"),
+  // },
+  // {
+  //   slug: "snoopy",
+  //   title: "Sleeping Snoopy",
+  //   date: "Nov 2026",
+  //   // Grid cell (0, -1): above sunset
+  //   x: -520,
+  //   y: -1900,
+  //   width: 1040,
+  //   height: 800,
+  //   maxResolution: 2,
+  //   load: () => import("./snoopy"),
+  // },
 ];
