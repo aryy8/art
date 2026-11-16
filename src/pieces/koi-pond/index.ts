@@ -266,11 +266,13 @@ const mount: MountPiece = async (ctx): Promise<PieceInstance> => {
     last = null;
     setPointer(state, null, 0);
   };
-  // a click is just a bigger drop in the water (no feeding)
+  // a click is a bigger drop in the water (no feeding)
   const onDown = (e: PointerEvent) => {
     const u = ctx.toLocal(e);
     if (ctx.reducedMotion) return;
     addDrop(u, 0.04, 0.22);
+    // ...and the nearest koi darts away from it
+    if (u.x >= 0 && u.x <= 1 && u.y >= 0 && u.y <= 1) pokeAt(state, u.x * W, u.y * H);
   };
   ctx.el.addEventListener("pointermove", onMove);
   ctx.el.addEventListener("pointerleave", onLeave);
