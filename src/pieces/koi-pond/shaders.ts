@@ -39,9 +39,9 @@ void main() {
  *      Only open water refracts; the displacement weight is an ERODED water mask, so it is
  *      exactly zero on and around pads / lotus / the torn edge — they never warp or smear.
  *   2. Soft, offset shadow of the koi on the pond floor.
- *   3. Koi seen THROUGH the surface: refracted by the flow/ripple field, softened, slightly
- *      desaturated and pulled toward the local water colour, with caustics on their backs and
- *      the painted surface strokes passing over them. Hidden under pads and the lotus.
+ *   3. Koi seen THROUGH the surface: gently refracted by the slow flow field, softened, slightly
+ *      desaturated and pulled toward the local water colour, with the painted surface strokes
+ *      drifting slowly over them (no caustics / ripple jitter on the fish → no flicker). Hidden under pads and the lotus.
  *   Mask: R = koi visible, G = displacement weight, B = open-water surface. Where B = 0
  *   (lotus, pads, paper) the output is the plate pixel, untouched.
  */
@@ -84,15 +84,6 @@ float tooth(vec2 uv) {
   return g * 0.7 + drag * 0.3;
 }
 
-// gentle moving caustic network (two warped sine lattices)
-float caustic(vec2 uv, float t) {
-  vec2 p = uv * vec2(ASP, 1.0) * 9.0;
-  p += 0.6 * vec2(gnoise(p * 0.5 + t * 0.15), gnoise(p * 0.5 - t * 0.12));
-  float a = abs(sin(p.x + t * 0.7) * sin(p.y * 1.1 - t * 0.5));
-  float b = abs(sin((p.x + p.y) * 0.8 - t * 0.6));
-  return pow(1.0 - min(a, b), 6.0);
-}
-
 void main() {
   vec2 uv = vec2(vUv.x, 1.0 - vUv.y); // y down
   vec2 st = vUv;                      // GL orientation (fish RT, sim)
@@ -116,8 +107,12 @@ void main() {
   // soft local water colour (for tinting what is under the surface)
   vec3 deep = texture2D(uPlate, vec2(uv.x, 1.0 - uv.y), 5.0).rgb;
 
-  // ---- koi, seen THROUGH the surface: refracted by flow + ripples
-  vec2 refr = (flow * 1.6 + rip * 2.2 + 0.0015 * vec2(gnoise(uv * 14.0 + t * 0.6), gnoise(uv * 14.0 - t * 0.5))) * fx;
+  // the surface as it drifts slowly with the flow only (no ripple jitter) — used over the koi
+  vec3 waterSlow = wDisp > 0.001 ? plate(uv + flow * wDisp).rgb : base.rgb;
+
+  // ---- koi, seen THROUGH the surface: a gentle, low-frequency, slowly varying refraction
+  // (flow field only: ≤ ~1px, smooth in space and time — no ripple or noise jitter → no flicker)
+  vec2 refr = flow * 0.6 * fx;
   vec2 fuv = st + vec2(refr.x, -refr.y);
   vec4 fish = vec4(0.0);
   for (int i = 0; i < 5; i++) {
@@ -141,7 +136,7 @@ void main() {
     vec3 fc = fish.rgb / max(fish.a, 1e-3);
     // pastel tooth (page-fixed) — crayon skips let the water show through
     float g = tooth(uv);
-    float gap = smoothstep(0.42, 0.75, g) * 0.35;
+    float gap = smoothstep(0.45, 0.8, g) * 0.18;
     fc *= 0.94 + 0.12 * (0.5 + 0.5 * gnoise(uv * vec2(800.0, 600.0) * 1.7));
     // submerged grade: a little desaturated, lower contrast, pulled toward the teal water
     float l = dot(fc, vec3(0.3, 0.59, 0.11));
@@ -149,14 +144,12 @@ void main() {
     fc = mix(vec3(0.45), fc, 0.96);
     fc = mix(fc, deep, 0.10);
     fc *= vec3(0.97, 0.995, 1.01);
-    // caustic light dancing on the back
-    fc += vec3(0.55, 0.65, 0.55) * caustic(uv, t) * 0.10 * fx;
     float a = fa * (1.0 - gap) * 0.95;
     col = mix(col, fc, a);
     // the painted surface strokes (blue-white swirls) pass OVER the fish
-    float wl = dot(water, vec3(0.3, 0.59, 0.11));
-    float hl = smoothstep(0.42, 0.7, wl) * smoothstep(-0.02, 0.08, water.b - water.r);
-    col = mix(col, water, fa * fx * (0.04 + 0.34 * hl));
+    float wl = dot(waterSlow, vec3(0.3, 0.59, 0.11));
+    float hl = smoothstep(0.42, 0.7, wl) * smoothstep(-0.02, 0.08, waterSlow.b - waterSlow.r);
+    col = mix(col, waterSlow, fa * fx * (0.04 + 0.3 * hl));
   }
 
   // ripple crests catch a little pale-blue pastel light (on top of everything in the water)
