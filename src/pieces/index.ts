@@ -7,8 +7,8 @@ import type { PieceDefinition } from "./types";
  * That's it. Coordinates are world units (1 unit == 1 CSS px at 100% zoom).
  * Layout: pieces sit on a plus-shaped grid of 1500-unit cells. Each piece is centred
  * on its cell (cell (i, j) has its centre at i*1500, j*1500), so the spacing is even.
- * The canvas opens centred on sunset-sea, which sits on the world origin (cell (0, 0)).
- * Fill the empty diagonal cells (±1, ±1) next.
+ * The canvas opens zoomed out to fit every live piece (sunset + koi). Sunset sits on
+ * the world origin (cell (0, 0)). Fill the empty diagonal cells (±1, ±1) next.
  */
 export const pieces: PieceDefinition[] = [
   {

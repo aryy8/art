@@ -121,21 +121,34 @@ export class App {
     return { top: small ? 70 : 92, bottom: small ? 40 : 64, side: small ? 18 : 64 };
   }
 
-  /** Open on the headline piece at a comfortable size; the others wait further out on the page. */
+  /** Open zoomed out so every live piece is on screen together. */
   private homeView(): View {
-    const head = this.defs.find((d) => d.slug === "sunset-sea") ?? this.defs[0];
-    const v = this.fitView(head);
-    return { ...v, s: v.s * 0.88 };
+    return this.fitBounds(this.defs, 0.92);
   }
 
   private fitView(d: PieceDefinition): View {
+    return this.fitBounds([d]);
+  }
+
+  /** Fit one or more pieces into the viewport (with chrome insets). */
+  private fitBounds(defs: PieceDefinition[], pad = 1): View {
     const W = window.innerWidth, H = window.innerHeight;
     const ins = this.insets();
     const aw = W - ins.side * 2;
     const ah = H - ins.top - ins.bottom;
-    const s = Math.min(aw / d.width, ah / d.height);
-    const cy = d.y + d.height / 2 - (ins.top - ins.bottom) / 2 / s;
-    return { cx: d.x + d.width / 2, cy, s };
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const d of defs) {
+      minX = Math.min(minX, d.x);
+      minY = Math.min(minY, d.y);
+      maxX = Math.max(maxX, d.x + d.width);
+      maxY = Math.max(maxY, d.y + d.height);
+    }
+    const bw = Math.max(1, maxX - minX);
+    const bh = Math.max(1, maxY - minY);
+    const s = Math.min(aw / bw, ah / bh) * pad;
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2 - (ins.top - ins.bottom) / 2 / s;
+    return { cx, cy, s };
   }
 
   goHome() {
