@@ -42,6 +42,7 @@ export class App {
       <div class="world"></div>
       <h1 class="title"><a href="#" data-home>Art</a></h1>
       <button class="close" aria-label="Back to the canvas"></button>
+      <button class="recenter" aria-label="Recenter the canvas" title="Recenter"></button>
     `;
     this.world = this.root.querySelector(".world")!;
 
@@ -221,13 +222,14 @@ export class App {
       }),
     );
     r.querySelector(".close")!.addEventListener("click", () => this.unfocus());
+    r.querySelector(".recenter")!.addEventListener("click", () => this.goHome());
     r.addEventListener("contextmenu", (e) => {
       if (this.insideFocused(e.target)) e.preventDefault();
     });
   }
 
   private isUi(t: EventTarget | null) {
-    return !!(t as HTMLElement | null)?.closest?.(".title, .close");
+    return !!(t as HTMLElement | null)?.closest?.(".title, .close, .recenter");
   }
 
   private onDown(e: PointerEvent) {
