@@ -11,7 +11,8 @@ import { SDF, SDF_W, SDF_H, SDF_CELL } from "./water-sdf.ts";
 export const W = 800;
 export const H = 600;
 /** Match the painted koi: ~38% of pond width, thick body + massive veil. */
-export const KOI_LEN = W * 0.37;
+/** two-thirds of the painted size, so the pair has open water to swim in */
+export const KOI_LEN = W * 0.37 * 0.67;
 export const SPINE_N = 16;
 export const TAIL_N = 12;
 /** koi.png: peduncle at x≈416 of the 1014px-wide fish → body = head-side 59%, veil = 41%. s=0 at head. */
@@ -19,9 +20,9 @@ export const S_TAIL_ROOT = 0.59;
 /** head-path history used so the body follows exactly where the head has been */
 const HIST = 1400;
 
-export const SPEED_BURST = 58;
+export const SPEED_BURST = 72;
 export const SPEED_FLEE = 95;
-export const SPEED_GLIDE_MIN = 18;
+export const SPEED_GLIDE_MIN = 22;
 export const TURN_MAX = 1.1;
 export const WAVE_K = 4.6;
 export const A_BODY = 0.055; // × L — visible swim undulation
@@ -102,6 +103,9 @@ export interface Fish {
   blocked: boolean;
   /** this koi's head is closing in on the other one right now */
   headThreat: boolean;
+  /** >0 while this koi gives way: it turns firmly away from the other and keeps gliding */
+  yieldT: number;
+  yieldAng: number;
 }
 
 export interface SimState {
@@ -198,6 +202,8 @@ function makeFish(x: number, y: number, heading: number, seed: number, scale: nu
     room: 1,
     blocked: false,
     headThreat: false,
+    yieldT: 0,
+    yieldAng: 0,
   };
   initSpine(f, bend);
   return f;
@@ -342,7 +348,7 @@ function nudgeFish(f: Fish, dx: number, dy: number, cap = NUDGE_MAX) {
 
 /** A head driving into something slows down (the only way a koi "stops"). */
 function brakeIfInto(f: Fish, nx: number, ny: number) {
-  if (Math.cos(f.heading) * nx + Math.sin(f.heading) * ny < 0) f.speed = Math.max(2, f.speed * 0.85);
+  if (Math.cos(f.heading) * nx + Math.sin(f.heading) * ny < 0 && f.yieldT <= 0) f.speed = Math.max(SPEED_GLIDE_MIN * 0.6, f.speed * 0.95);
 }
 
 /** Lotus corner is absolute: the veil bends away, the body slides off it sideways and brakes. */
@@ -548,7 +554,7 @@ function placeCost(x: number, y: number, L: number) {
   if (wc < 55) c += 3 * ((55 - wc) / 55) ** 2; // soft: may slip under a pad for a moment
   // each paper edge on its own (a sum, not a min, so turning back toward open water always pays)
   for (const e of [x - EDGE_X0, EDGE_X1 - x, y - EDGE_Y0, EDGE_Y1 - y]) {
-    if (e < 110) c += 30 * ((110 - e) / 110) ** 2 + (e < 20 ? 200 + 10 * (20 - e) : 0);
+    if (e < 85) c += 30 * ((85 - e) / 85) ** 2 + (e < 20 ? 200 + 10 * (20 - e) : 0);
   }
   const want = L * 0.45;
   const ld = lotusSdf(x, y).d;
@@ -646,7 +652,7 @@ function planTurn(f: Fish, other: Fish, fleeing: boolean, curious: Vec2 | null) 
       for (let m = 0; m < NB; m++) bodyPoint(other, othX, othY, k, ov * PLAN_DT, BODY_S[m], othBX, othBY, k * NB + m);
   }
   // keep more room at speed (a darting koi needs it to turn away in time)
-  const WANT_G = 40 + 0.3 * (v + ov);
+  const WANT_G = 30 + 0.25 * (v + ov);
   const gNow = fishGap(f, other).gap;
   let best = Infinity;
   let bestW = f.planW;
@@ -768,10 +774,19 @@ function steerFish(sim: SimState, f: Fish, other: Fish, dt: number) {
     }
   }
 
+  if (f.yieldT > 0) {
+    // near the lotus corner or the paper edge, give way toward open water instead
+    const ls = lotusSdf(f.pos.x, f.pos.y);
+    let ya = f.yieldAng;
+    if (ls.d < L * 0.5) ya = Math.atan2(ls.ny, ls.nx);
+    else if (edgeClear(f.pos.x, f.pos.y) < 60) ya = Math.atan2(320 - f.pos.y, 400 - f.pos.x);
+    const e = angDiff(f.heading, ya);
+    f.planW = Math.abs(e) > 0.15 ? Math.sign(e) * 1.2 : 0;
+  }
   // turn rate eases toward the plan (bounded angular acceleration → no heading snaps)
   const acc = fleeing ? ANG_ACC_FLEE : ANG_ACC;
   f.turnRate += clamp(f.planW - f.turnRate, -acc * dt, acc * dt);
-  const cap = turnCap(f, Math.max(f.speed, 1), fleeing);
+  const cap = f.yieldT > 0 ? 1.2 : turnCap(f, Math.max(f.speed, 1), fleeing);
   if (Math.abs(f.turnRate) > cap) f.turnRate += (Math.sign(f.turnRate) * cap - f.turnRate) * Math.min(1, dt * 4);
   f.heading += f.turnRate * dt;
 
@@ -789,11 +804,11 @@ function steerFish(sim: SimState, f: Fish, other: Fish, dt: number) {
   const vAhead = Math.max(10, ahead * 0.3);
 
   // burst / glide rhythm
-  const tight = f.blocked;
+  const tight = false;
   if (sim.reduced) {
     f.speed = lerp(f.speed, SPEED_GLIDE_MIN * 1.2, dt * 2);
     f.beatEnergy = 0.2;
-  } else if (fleeing && !f.headThreat && !tight) {
+  } else if (fleeing) {
     f.speed = lerp(f.speed, SPEED_FLEE, dt * 5);
     f.beatEnergy = lerp(f.beatEnergy, 1, dt * 6);
     f.burstT = 0;
@@ -818,7 +833,11 @@ function steerFish(sim: SimState, f: Fish, other: Fish, dt: number) {
   if (!fleeing && f.speed > vAhead) f.speed = Math.max(vAhead, f.speed - 40 * dt);
   // every arc still meets the other koi soon, or the head is closing in on it: ease right off
   // (it swims on and clears the way)
-  if ((tight || f.headThreat) && f.speed > 5) f.speed = Math.max(5, f.speed - 150 * dt);
+  // giving way: never stop, keep a calm glide while turning off
+  if (f.yieldT > 0) {
+    f.yieldT -= dt;
+    f.speed = Math.max(f.speed, SPEED_GLIDE_MIN * 1.3);
+  }
   f.speed *= speedMul;
   f.vel.x = Math.cos(f.heading) * f.speed;
   f.vel.y = Math.sin(f.heading) * f.speed;
@@ -1052,8 +1071,19 @@ export function stepSim(sim: SimState, dt: number, acc: number): number {
       const [a, b] = sim.fish;
       const g = fishGap(a, b);
       const closing = g.gap < sim.lastGap - 1e-3;
-      a.headThreat = closing && g.gap < 28 && g.i <= 5 && !(g.j <= 5 && b.speed < a.speed - 10);
-      b.headThreat = closing && g.gap < 28 && g.j <= 5 && !(g.i <= 5 && a.speed < b.speed - 10);
+      a.headThreat = false;
+      b.headThreat = false;
+      void closing;
+      // deadlock breaker: touching, or both nearly stopped close together → exactly one yields
+      if (a.yieldT <= 0 && b.yieldT <= 0 && (g.gap < 10 || (g.gap < 30 && a.speed < 18 && b.speed < 18))) {
+        const aHead = g.i <= 5 && g.j > 5;
+        const bHead = g.j <= 5 && g.i > 5;
+        const y = aHead ? a : bHead ? b : a.speed <= b.speed ? a : b;
+        const o = y === a ? b : a;
+        const k = y === a ? g.j : g.i;
+        y.yieldT = 1.6;
+        y.yieldAng = Math.atan2(y.pos.y - o.spineY[k], y.pos.x - o.spineX[k]);
+      }
       sim.lastGap = g.gap;
     }
     steerFish(sim, sim.fish[0], sim.fish[1], h);
