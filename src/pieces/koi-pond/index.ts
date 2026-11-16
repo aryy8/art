@@ -3,13 +3,11 @@ import type { MountPiece, PieceInstance } from "../types";
 import { FULLSCREEN_VERT, GLSurface, PingPong } from "../../lib/glpiece";
 import {
   createSim,
-  feedAt,
   pokeAt,
   setPointer,
   stepSim,
   W,
   H,
-  MAX_PELLETS,
   type SimState,
 } from "./sim";
 import {
@@ -22,16 +20,17 @@ import {
 } from "./fish-mesh";
 import { COMPOSITE_FRAG, MAX_DROPS, SIM_FRAG } from "./shaders";
 
-import waterUrl from "./assets/water-plate.webp?url";
-import floraUrl from "./assets/flora-plate.webp?url";
-import waterMaskUrl from "./assets/water-mask.webp?url";
-import koiUrl from "./assets/koi.webp?url";
-import finUrl from "./assets/fin.webp?url";
+// All derived by scripts/koi-masks.py from target-final.png / koi.png / koi-pair-pose.png
+import plateUrl from "./assets/pond-final.webp?url";
+import waterMaskUrl from "./assets/water-mask-final.png?url";
+import koiUrl from "./assets/koi-final.webp?url";
+import finUrl from "./assets/fin-final.png?url";
 
 /**
  * Koi pond — layered oil pastel.
- * Water plate distorts. Flora plate (pads + lotus) stays still.
- * Torn edge is alpha so the page paper shows through — no off-white box.
+ * One plate = Aryan's painting with the koi removed (paper edge as alpha).
+ * Only open water refracts; pads, lotus and edge never move. The koi are the painted sprite
+ * bent along a simulated spine.
  */
 
 const SIM_W = 200;
@@ -147,16 +146,14 @@ const mount: MountPiece = async (ctx): Promise<PieceInstance> => {
   const gl = new GLSurface(ctx.el);
   gl.setSize(ctx.width, ctx.height);
 
-  const [water0, flora0, mask0, koi0, fin0] = await Promise.all([
-    loadTex(waterUrl, "water-plate.webp"),
-    loadTex(floraUrl, "flora-plate.webp"),
-    loadTex(waterMaskUrl, "water-mask.webp"),
-    loadTex(koiUrl, "koi.webp"),
-    loadTex(finUrl, "fin.webp"),
+  const [plate0, mask0, koi0, fin0] = await Promise.all([
+    loadTex(plateUrl, "pond-final.webp"),
+    loadTex(waterMaskUrl, "water-mask-final.png"),
+    loadTex(koiUrl, "koi-final.webp"),
+    loadTex(finUrl, "fin-final.png"),
   ]);
 
-  const waterTex = water0 ?? solidTex([20, 70, 90]);
-  const floraTex = flora0 ?? waterTex;
+  const waterTex = plate0 ?? solidTex([20, 70, 90]);
   const waterMask = mask0 ?? solidTex([255, 255, 255]);
   const koiTex = koi0 ?? makeFallbackFishTex();
   const finTex = fin0 ?? koiTex;
@@ -202,14 +199,12 @@ const mount: MountPiece = async (ctx): Promise<PieceInstance> => {
   const fishScene = new THREE.Scene();
   const ortho = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
 
-  const pelletUniforms = Array.from({ length: MAX_PELLETS }, () => new THREE.Vector4());
   const compMat = new THREE.ShaderMaterial({
     vertexShader: FULLSCREEN_VERT,
     fragmentShader: COMPOSITE_FRAG,
     uniforms: {
-      uWater: { value: waterTex },
-      uFlora: { value: floraTex },
-      uWaterMask: { value: waterMask },
+      uPlate: { value: waterTex },
+      uMask: { value: waterMask },
       uSim: { value: ripple.a.texture },
       uFish: { value: fishRT.texture },
       uFlow: { value: flowTex },
@@ -218,8 +213,6 @@ const mount: MountPiece = async (ctx): Promise<PieceInstance> => {
       uTime: { value: 0 },
       uAmp: { value: ctx.reducedMotion ? 0.25 : 1 },
       uFlowAmp: { value: ctx.reducedMotion ? FLOW_STRENGTH_RM : FLOW_STRENGTH },
-      uPellets: { value: pelletUniforms },
-      uPelletCount: { value: 0 },
     },
     transparent: true,
     depthTest: false,
@@ -273,10 +266,11 @@ const mount: MountPiece = async (ctx): Promise<PieceInstance> => {
     last = null;
     setPointer(state, null, 0);
   };
+  // a click is just a bigger drop in the water (no feeding)
   const onDown = (e: PointerEvent) => {
-    if (!ctx.isFocused()) return;
     const u = ctx.toLocal(e);
-    feedAt(state, u.x * W, u.y * H);
+    if (ctx.reducedMotion) return;
+    addDrop(u, 0.04, 0.22);
   };
   ctx.el.addEventListener("pointermove", onMove);
   ctx.el.addEventListener("pointerleave", onLeave);
@@ -286,7 +280,6 @@ const mount: MountPiece = async (ctx): Promise<PieceInstance> => {
   if (debug) {
     (window as unknown as Record<string, unknown>).__koi = {
       poke: (x: number, y: number) => pokeAt(state, x, y),
-      feed: (x: number, y: number) => feedAt(state, x, y),
       fish: state.fish,
     };
   }
@@ -363,15 +356,6 @@ const mount: MountPiece = async (ctx): Promise<PieceInstance> => {
 
         drawFishLayer();
 
-        let pc = 0;
-        for (let i = 0; i < MAX_PELLETS; i++) {
-          const p = state.pellets[i];
-          if (!p.alive) continue;
-          pelletUniforms[pc].set(p.x / W, p.y / H, p.age / 12, 1);
-          pc++;
-        }
-        for (let i = pc; i < MAX_PELLETS; i++) pelletUniforms[i].set(0, 0, 0, 0);
-        compMat.uniforms.uPelletCount.value = pc;
         compMat.uniforms.uSim.value = ripple.a.texture;
         compMat.uniforms.uFish.value = fishRT.texture;
         compMat.uniforms.uTime.value = state.time * (ctx.reducedMotion ? 0.4 : 1);
@@ -399,7 +383,7 @@ const mount: MountPiece = async (ctx): Promise<PieceInstance> => {
         q.mesh.geometry.dispose();
         q.mat.dispose();
       }
-      for (const t of [waterTex, floraTex, waterMask, koiTex, finTex, flowTex]) {
+      for (const t of [waterTex, waterMask, koiTex, finTex, flowTex]) {
         t.dispose();
       }
       gl.dispose();
