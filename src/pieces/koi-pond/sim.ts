@@ -8,20 +8,20 @@
 
 export const W = 800;
 export const H = 600;
-/** Match target.png: each fish ≈ 1/3 of pond width, tail included. */
-export const KOI_LEN = W * 0.34;
+/** Match the painted koi: ~38% of pond width, thick body + massive veil. */
+export const KOI_LEN = W * 0.38;
 export const SPINE_N = 16;
-export const TAIL_N = 10;
-/** Body = rightmost 59% of sprite; veil = leftmost 41%. s=0 at head. */
-export const S_TAIL_ROOT = 0.59;
+export const TAIL_N = 12;
+/** Body = rightmost 55% of sprite; veil = leftmost 45%. s=0 at head. */
+export const S_TAIL_ROOT = 0.55;
 export const MAX_PELLETS = 5;
 
-export const SPEED_BURST = 90;
-export const SPEED_GLIDE_MIN = 25;
-export const TURN_MAX = 1.6;
-export const WAVE_K = 5.2;
-export const A_BODY = 0.04; // × L
-export const A_TAIL = 0.12;
+export const SPEED_BURST = 95;
+export const SPEED_GLIDE_MIN = 28;
+export const TURN_MAX = 1.45;
+export const WAVE_K = 4.6;
+export const A_BODY = 0.055; // × L — visible swim undulation
+export const A_TAIL = 0.18;
 export const INSET = 40;
 export const SEPARATION = KOI_LEN * 0.6;
 export const FLEE_SPEED = 900;
@@ -412,19 +412,41 @@ function steerFish(sim: SimState, f: Fish, other: Fish, dt: number) {
   const freq = lerp(1.0, 2.4, f.beatEnergy) * (fleeing ? 1.6 : 1) * (sim.reduced ? 0.45 : 1);
   f.phase += TWO_PI * freq * dt;
 
-  // wake on beats
-  const wave = Math.sin(f.phase);
-  if (wave > 0.85 && f.beatEnergy > 0.4 && !f.wakeReady) {
-    f.wakeReady = true;
-    const tip = SPINE_N - 1;
+  // water motion from swimming — continuous trail + beat pulses at the veil tip
+  const tipX = (f.tailUX[TAIL_N - 1] + f.tailLX[TAIL_N - 1]) * 0.5;
+  const tipY = (f.tailUY[TAIL_N - 1] + f.tailLY[TAIL_N - 1]) * 0.5;
+  const midX = (f.tailUX[Math.floor(TAIL_N * 0.45)] + f.tailLX[Math.floor(TAIL_N * 0.45)]) * 0.5;
+  const midY = (f.tailUY[Math.floor(TAIL_N * 0.45)] + f.tailLY[Math.floor(TAIL_N * 0.45)]) * 0.5;
+  if (!sim.reduced && f.speed > 18) {
+    // continuous wake scaled by speed — water should visibly churn behind them
+    const trail = (0.035 + f.speed * 0.0009) * (0.6 + f.beatEnergy * 0.5);
+    // ~1 tip drop per fish per sim step keeps the pond moving without flooding the queue
     sim.pendingDrops.push({
-      x: f.spineX[tip] / W,
-      y: f.spineY[tip] / H,
-      r: 0.012,
-      s: 0.012 + f.beatEnergy * 0.02,
+      x: tipX / W,
+      y: tipY / H,
+      r: 0.022 + f.speed * 0.00015,
+      s: trail,
+    });
+    if (f.beatEnergy > 0.45) {
+      sim.pendingDrops.push({
+        x: midX / W,
+        y: midY / H,
+        r: 0.016,
+        s: trail * 0.5,
+      });
+    }
+  }
+  const wave = Math.sin(f.phase);
+  if (wave > 0.82 && f.beatEnergy > 0.35 && !f.wakeReady) {
+    f.wakeReady = true;
+    sim.pendingDrops.push({
+      x: tipX / W,
+      y: tipY / H,
+      r: 0.028,
+      s: 0.08 + f.beatEnergy * 0.12 + f.speed * 0.0004,
     });
   }
-  if (wave < 0.2) f.wakeReady = false;
+  if (wave < 0.15) f.wakeReady = false;
 
   // depth drift
   // keep most time near the surface so colour matches the painting
@@ -517,8 +539,12 @@ function updateTail(f: Fish) {
   const nx = -ty;
   const ny = tx;
   const segLen = (L * (1 - S_TAIL_ROOT)) / (TAIL_N - 1);
-  const drag = 0.92;
-  const halfAt = (i: number) => L * (0.05 + 0.12 * (i / (TAIL_N - 1)));
+  const drag = 0.9;
+  // pair-pose veil: narrow at peduncle, very wide flame tips
+  const halfAt = (i: number) => {
+    const t = i / (TAIL_N - 1);
+    return L * (0.06 + 0.16 * t * t);
+  };
 
   const integrate = (
     xs: Float32Array,

@@ -67,11 +67,12 @@ function lerp(a: number, b: number, t: number) {
 }
 
 function profileHalf(s: number) {
-  if (s < 0.12) return 0.55 + s * 3.5;
-  if (s < 0.35) return 1.0;
-  if (s < S_TAIL_ROOT) return lerp(1.0, 0.4, (s - 0.35) / (S_TAIL_ROOT - 0.35));
-  // veil fans wider toward the tip
-  return lerp(0.55, 1.15, (s - S_TAIL_ROOT) / (1 - S_TAIL_ROOT));
+  // fat shoulders just behind the head, taper to peduncle, then mesh width
+  // for the veil is driven mostly by the Verlet lobes
+  if (s < 0.1) return 0.65 + s * 3.2;
+  if (s < 0.32) return 1.05;
+  if (s < S_TAIL_ROOT) return lerp(1.05, 0.42, (s - 0.32) / (S_TAIL_ROOT - 0.32));
+  return lerp(0.7, 1.35, (s - S_TAIL_ROOT) / Math.max(1e-4, 1 - S_TAIL_ROOT));
 }
 
 function spriteMat(tex: THREE.Texture) {
@@ -109,9 +110,9 @@ export function createFishBody(tex: THREE.Texture): FishBody {
       pos[vi * 3] = 0;
       pos[vi * 3 + 1] = 0;
       pos[vi * 3 + 2] = 0;
-      // head at +x (right) → u reversed; v maps onto opaque band of sprite
+      // head at +x (right) → u reversed; v covers body + the wide veil in the sprite
       uvs[vi * 2] = 1 - s;
-      uvs[vi * 2 + 1] = 0.5 + v * 0.28;
+      uvs[vi * 2 + 1] = 0.5 + v * 0.34;
       vi++;
     }
   }
@@ -137,8 +138,8 @@ export function createFishBody(tex: THREE.Texture): FishBody {
 
 export function updateFishBody(body: FishBody, f: Fish) {
   const L = KOI_LEN * f.scale * (1 - f.depth * 0.06);
-  // painted body ≈ 1/5–1/6 of length across at the shoulders
-  const halfW0 = L * 0.13;
+  // pair-pose / koi.png: thick body (~1/4–1/5 of length), not a shrimp stick
+  const halfW0 = L * 0.2;
   const bank = Math.max(-1, Math.min(1, f.turnRate / 1.6));
   const { pos, restS, restV } = body;
 
@@ -163,7 +164,7 @@ export function updateFishBody(body: FishBody, f: Fish) {
     let wy = by;
     if (s >= S_TAIL_ROOT - 0.02) {
       const [tx, ty] = sampleTail(f, s, v);
-      const blend = 1 - smoothstep(S_TAIL_ROOT - 0.02, S_TAIL_ROOT + 0.08, s);
+      const blend = 1 - smoothstep(S_TAIL_ROOT - 0.02, S_TAIL_ROOT + 0.1, s);
       wx = tx + (bx - tx) * blend;
       wy = ty + (by - ty) * blend;
     }
@@ -241,10 +242,10 @@ export function createFinFan(tex: THREE.Texture): FinFan {
 
 export function updateFinFan(fan: FinFan, f: Fish, side: number, open: number) {
   const L = KOI_LEN * f.scale * (1 - f.depth * 0.06);
-  const sp = sampleSpine(f, 0.22);
+  const sp = sampleSpine(f, 0.2);
   const nx = -sp.ty * side;
   const ny = sp.tx * side;
-  const len = L * 0.13;
+  const len = L * 0.16;
   const spread = open; // 0 folded → ~0.96 (~55°)
   const cols = 4;
   const rows = 3;

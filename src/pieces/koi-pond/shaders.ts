@@ -1,6 +1,6 @@
 import { NOISE } from "../../lib/watercolor.glsl";
 
-export const MAX_DROPS = 16;
+export const MAX_DROPS = 24;
 export const ASP = 800 / 600;
 
 /** Hugo-Elias ripple step — same equation as Sunset sea. */
@@ -137,9 +137,10 @@ void main() {
   vec2 st = vec2(uv.x, 1.0 - uv.y);
   float hx = texture2D(uSim, st + vec2(uSimTexel.x, 0.0)).r - texture2D(uSim, st - vec2(uSimTexel.x, 0.0)).r;
   float hy = texture2D(uSim, st - vec2(0.0, uSimTexel.y)).r - texture2D(uSim, st + vec2(0.0, uSimTexel.y)).r;
-  float pxScale = 3.5 / uRes.x;
-  vec2 rip = clamp(vec2(hx, hy) * pxScale * 16.0 * uAmp, -pxScale, pxScale);
-  float sh = (hy * 12.0 + hx * 3.5) * uAmp;
+  // stronger refraction so swim wakes actually read as moving water
+  float pxScale = 5.5 / uRes.x;
+  vec2 rip = clamp(vec2(hx, hy) * pxScale * 22.0 * uAmp, -pxScale * 1.4, pxScale * 1.4);
+  float sh = (hy * 16.0 + hx * 5.0) * uAmp;
 
   // pads / lotus / edge: always sample flora at STATIC uv — never warp
   vec3 flora = samplePlate(uFlora, uv);
@@ -148,7 +149,7 @@ void main() {
 
   // pastel crest lift on water only (no shiny specular)
   vec3 pastelHi = vec3(0.76, 0.88, 0.92);
-  col = mix(col, pastelHi, clamp(sh, 0.0, 1.0) * 0.05 * mask);
+  col = mix(col, pastelHi, clamp(sh, 0.0, 1.0) * 0.09 * mask);
 
   // soft contact shadow — small, tight, not a second fish
   vec2 fishUV0 = vec2(uv.x, 1.0 - uv.y);
