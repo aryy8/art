@@ -21,6 +21,18 @@ export const pieces: PieceDefinition[] = [
     load: () => import("./sunset-sea"),
   },
   {
+    slug: "koi-pond",
+    title: "Koi pond",
+    date: "Nov 2026",
+    // Right of sunset-sea, vertically centred on it (sunset centre y ≈ 0)
+    x: 450,
+    y: -300,
+    width: 800,
+    height: 600,
+    maxResolution: 1.8,
+    load: () => import("./koi-pond"),
+  },
+  {
     slug: "pixel-sea",
     title: "Pixel sea",
     date: "Nov 2026",
