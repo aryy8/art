@@ -35,18 +35,19 @@ export const pieces: PieceDefinition[] = [
     maxResolution: 1.8,
     load: () => import("./koi-pond"),
   },
-  {
-    slug: "pixel-sea",
-    title: "Pixel sea",
-    date: "Nov 2026",
-    // Grid cell (0, +1): below sunset
-    x: -350,
-    y: 1150,
-    width: 700,
-    height: 700,
-    maxResolution: 2,
-    load: () => import("./pixel-sea"),
-  },
+  // Hidden for now: pixel-sea needs a new frame shape before it goes back on the canvas.
+  // {
+  //   slug: "pixel-sea",
+  //   title: "Pixel sea",
+  //   date: "Nov 2026",
+  //   // Grid cell (0, +1): below sunset
+  //   x: -350,
+  //   y: 1150,
+  //   width: 700,
+  //   height: 700,
+  //   maxResolution: 2,
+  //   load: () => import("./pixel-sea"),
+  // },
   {
     slug: "ascii-wing",
     title: "ASCII wing",
