@@ -1,8 +1,8 @@
 import * as THREE from "three";
 import { KOI_LEN, S_TAIL_ROOT, SPINE_N, TAIL_N, type Fish, W, H } from "./sim";
 
-const ALONG = 48;
-const ACROSS = 8;
+const ALONG = 64;
+const ACROSS = 10;
 const VERTS = (ALONG + 1) * (ACROSS + 1);
 
 function toNdc(x: number, y: number): [number, number] {
@@ -81,7 +81,7 @@ function spriteMat(tex: THREE.Texture) {
     transparent: true,
     depthTest: false,
     depthWrite: false,
-    alphaTest: 0.03,
+    alphaTest: 0.015,
     side: THREE.DoubleSide,
   });
 }
@@ -138,8 +138,8 @@ export function createFishBody(tex: THREE.Texture): FishBody {
 
 export function updateFishBody(body: FishBody, f: Fish) {
   const L = KOI_LEN * f.scale * (1 - f.depth * 0.06);
-  // pair-pose / koi.png: thick body (~1/4–1/5 of length), not a shrimp stick
-  const halfW0 = L * 0.2;
+  // pair-pose: robust body — match painted mass, not a shrimp stick
+  const halfW0 = L * 0.24;
   const bank = Math.max(-1, Math.min(1, f.turnRate / 1.6));
   const { pos, restS, restV } = body;
 

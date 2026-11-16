@@ -170,7 +170,7 @@ const mount: MountPiece = async (ctx): Promise<PieceInstance> => {
     uniforms: {
       uState: { value: ripple.a.texture },
       uTexel: { value: new THREE.Vector2(1 / SIM_W, 1 / SIM_H) },
-      uDamping: { value: ctx.reducedMotion ? 0.97 : 0.985 },
+      uDamping: { value: ctx.reducedMotion ? 0.97 : 0.978 },
       uDrops: { value: drops },
       uDropCount: { value: 0 },
     },

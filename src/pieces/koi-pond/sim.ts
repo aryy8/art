@@ -419,20 +419,19 @@ function steerFish(sim: SimState, f: Fish, other: Fish, dt: number) {
   const midY = (f.tailUY[Math.floor(TAIL_N * 0.45)] + f.tailLY[Math.floor(TAIL_N * 0.45)]) * 0.5;
   if (!sim.reduced && f.speed > 18) {
     // continuous wake scaled by speed — water should visibly churn behind them
-    const trail = (0.035 + f.speed * 0.0009) * (0.6 + f.beatEnergy * 0.5);
-    // ~1 tip drop per fish per sim step keeps the pond moving without flooding the queue
+    const trail = (0.06 + f.speed * 0.0014) * (0.65 + f.beatEnergy * 0.55);
     sim.pendingDrops.push({
       x: tipX / W,
       y: tipY / H,
-      r: 0.022 + f.speed * 0.00015,
+      r: 0.03 + f.speed * 0.0002,
       s: trail,
     });
-    if (f.beatEnergy > 0.45) {
+    if (f.beatEnergy > 0.4) {
       sim.pendingDrops.push({
         x: midX / W,
         y: midY / H,
-        r: 0.016,
-        s: trail * 0.5,
+        r: 0.022,
+        s: trail * 0.65,
       });
     }
   }
@@ -442,8 +441,8 @@ function steerFish(sim: SimState, f: Fish, other: Fish, dt: number) {
     sim.pendingDrops.push({
       x: tipX / W,
       y: tipY / H,
-      r: 0.028,
-      s: 0.08 + f.beatEnergy * 0.12 + f.speed * 0.0004,
+      r: 0.04,
+      s: 0.16 + f.beatEnergy * 0.2 + f.speed * 0.0006,
     });
   }
   if (wave < 0.15) f.wakeReady = false;
@@ -488,8 +487,9 @@ function updateSpine(f: Fish) {
       const py = f.spineY[i - 1] - f.spineY[i - 2];
       const pa = Math.atan2(py, px);
       let a = Math.atan2(dy, dx);
-      a = pa + clamp(angDiff(pa, a), -0.22, 0.22);
-      a = lerp(a, pa, 0.08);
+      // keep lazy S-curves — hard bends read as shrimp curls
+      a = pa + clamp(angDiff(pa, a), -0.16, 0.16);
+      a = lerp(a, pa, 0.14);
       dx = Math.cos(a);
       dy = Math.sin(a);
       d = 1;
