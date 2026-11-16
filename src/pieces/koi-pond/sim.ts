@@ -9,21 +9,22 @@
 export const W = 800;
 export const H = 600;
 /** Match the painted koi: ~38% of pond width, thick body + massive veil. */
-export const KOI_LEN = W * 0.38;
+export const KOI_LEN = W * 0.37;
 export const SPINE_N = 16;
 export const TAIL_N = 12;
-/** Body = rightmost 55% of sprite; veil = leftmost 45%. s=0 at head. */
-export const S_TAIL_ROOT = 0.55;
-export const MAX_PELLETS = 5;
+/** koi.png: peduncle at x≈416 of the 1014px-wide fish → body = head-side 59%, veil = 41%. s=0 at head. */
+export const S_TAIL_ROOT = 0.59;
+/** head-path history used so the body follows exactly where the head has been */
+const HIST = 1400;
 
-export const SPEED_BURST = 95;
-export const SPEED_GLIDE_MIN = 28;
+export const SPEED_BURST = 72;
+export const SPEED_GLIDE_MIN = 16;
 export const TURN_MAX = 1.45;
 export const WAVE_K = 4.6;
 export const A_BODY = 0.055; // × L — visible swim undulation
 export const A_TAIL = 0.18;
-export const INSET = 40;
-export const SEPARATION = KOI_LEN * 0.6;
+export const INSET = 72;
+export const SEPARATION = KOI_LEN * 0.85;
 export const FLEE_SPEED = 900;
 export const FLEE_RADIUS = 120;
 export const CURIOSITY_STILL = 1.5;
@@ -33,15 +34,6 @@ const FISH_DT = 1 / 60;
 const TWO_PI = Math.PI * 2;
 
 export type Vec2 = { x: number; y: number };
-
-export interface Pellet {
-  x: number;
-  y: number;
-  vx: number;
-  vy: number;
-  age: number;
-  alive: boolean;
-}
 
 export interface Fish {
   pos: Vec2;
@@ -56,9 +48,6 @@ export interface Fish {
   glideT: number;
   fleeT: number;
   curiousT: number;
-  eatT: number;
-  reactT: number;
-  targetPellet: number;
   wanderTheta: number;
   noiseSeed: number;
   headScale: number;
@@ -82,11 +71,22 @@ export interface Fish {
   wakeReady: boolean;
   /** signed turn rate (rad/s), for banking */
   turnRate: number;
+  histX: Float32Array;
+  histY: Float32Array;
+  histN: number;
+  histHead: number;
+  /** per-spine-point lagged positions (veil inertia) */
+  qX: Float32Array;
+  qY: Float32Array;
+  /** signed curvature per spine point (1/px) */
+  curv: Float32Array;
+  /** persistent veil avoidance offsets (decay slowly) so bent-aside tails don't snap back */
+  offX: Float32Array;
+  offY: Float32Array;
 }
 
 export interface SimState {
   fish: [Fish, Fish];
-  pellets: Pellet[];
   pointer: Vec2 | null;
   pointerVel: number;
   pointerStill: number;
@@ -117,7 +117,7 @@ function noise1(t: number, seed: number) {
   return Math.sin(t * 1.7 + seed * 12.3) * 0.5 + Math.sin(t * 0.9 + seed * 4.1) * 0.5;
 }
 
-function makeFish(x: number, y: number, heading: number, seed: number, scale: number, tint: number): Fish {
+function makeFish(x: number, y: number, heading: number, seed: number, scale: number, tint: number, bend = 0): Fish {
   const f: Fish = {
     pos: { x, y },
     vel: { x: Math.cos(heading) * 40, y: Math.sin(heading) * 40 },
@@ -130,9 +130,6 @@ function makeFish(x: number, y: number, heading: number, seed: number, scale: nu
     glideT: 0,
     fleeT: 0,
     curiousT: 0,
-    eatT: 0,
-    reactT: 0,
-    targetPellet: -1,
     wanderTheta: seed,
     noiseSeed: seed,
     headScale: 1,
@@ -155,68 +152,236 @@ function makeFish(x: number, y: number, heading: number, seed: number, scale: nu
     tailLPy: new Float32Array(TAIL_N),
     wakeReady: false,
     turnRate: 0,
+    histX: new Float32Array(HIST),
+    histY: new Float32Array(HIST),
+    histN: 0,
+    histHead: 0,
+    qX: new Float32Array(SPINE_N),
+    qY: new Float32Array(SPINE_N),
+    curv: new Float32Array(SPINE_N),
+    offX: new Float32Array(SPINE_N),
+    offY: new Float32Array(SPINE_N),
   };
-  initSpine(f);
+  initSpine(f, bend);
   return f;
+}
+
+/** Visible half-width of the painted koi at spine point i (body + fanned veil). */
+export function halfWidth(f: Fish, i: number) {
+  const L = bodyLen(f);
+  const s = i / (SPINE_N - 1);
+  if (s < 0.1) return L * (0.05 + 0.7 * s);
+  // pectoral fins reach ~0.2L out from the body around s 0.2–0.45
+  if (s < 0.5) return L * (0.125 + 0.09 * Math.max(0, 1 - Math.abs(s - 0.32) / 0.16));
+  if (s < S_TAIL_ROOT) return L * 0.125;
+  const t = (s - S_TAIL_ROOT) / (1 - S_TAIL_ROOT);
+  return L * (0.1 + 0.24 * t); // feathery veil fans out to ~0.34L at the tip
+}
+
+/** Smallest clearance (px) between the two koi outlines, plus the pair that produced it. */
+export function fishGap(a: Fish, b: Fish) {
+  let best = Infinity;
+  let bi = 0;
+  let bj = 0;
+  for (let i = 0; i < SPINE_N; i++) {
+    for (let j = 0; j < SPINE_N; j++) {
+      const g = Math.hypot(a.spineX[i] - b.spineX[j], a.spineY[i] - b.spineY[j]) - halfWidth(a, i) - halfWidth(b, j);
+      if (g < best) {
+        best = g;
+        bi = i;
+        bj = j;
+      }
+    }
+  }
+  return { gap: best, i: bi, j: bj };
+}
+
+function translateFish(f: Fish, dx: number, dy: number) {
+  f.pos.x += dx;
+  f.pos.y += dy;
+  for (let i = 0; i < HIST; i++) {
+    f.histX[i] += dx;
+    f.histY[i] += dy;
+  }
+  for (let i = 0; i < SPINE_N; i++) {
+    f.spineX[i] += dx;
+    f.spineY[i] += dy;
+    f.qX[i] += dx;
+    f.qY[i] += dy;
+  }
+}
+
+/** Hard constraint: if the outlines still come closer than MIN_GAP, push the whole fish apart. */
+const MIN_GAP = 4;
+const SOFT_GAP = 30;
+/** diagnostics for scripts/koi-overlap-test.mts */
+export const hardStats = { pushes: 0, px: 0, maxPx: 0 };
+/** Keep the head inside the pond by sliding the whole fish (never teleport / re-pose it). */
+const WALL_X = 70;
+const WALL_Y = 58;
+function containHard(f: Fish) {
+  const dx = Math.max(0, WALL_X - f.pos.x) - Math.max(0, f.pos.x - (W - WALL_X));
+  const dy = Math.max(0, WALL_Y - f.pos.y) - Math.max(0, f.pos.y - (H - WALL_Y));
+  if (dx || dy) translateFish(f, dx, dy);
+  return dx !== 0 || dy !== 0;
+}
+
+/** Displace the veil around spine point k by (dx,dy), fading in from the tail root. */
+function bendTail(f: Fish, k: number, dx: number, dy: number) {
+  const root = Math.ceil(S_TAIL_ROOT * (SPINE_N - 1));
+  for (let i = root; i < SPINE_N; i++) {
+    const w = Math.min(1, (i - root + 1) / Math.max(1, k - root + 1));
+    const ww = w * w * (3 - 2 * w);
+    f.spineX[i] += dx * ww;
+    f.spineY[i] += dy * ww;
+    f.offX[i] += dx * ww;
+    f.offY[i] += dy * ww;
+    f.qX[i] = f.spineX[i];
+    f.qY[i] = f.spineY[i];
+  }
+}
+
+function separateHard(a: Fish, b: Fish) {
+  for (let iter = 0; iter < 48; iter++) {
+    // walls first; if two pinned fish still touch after many tries, never-overlap wins over walls
+    const ca = iter < 24 ? containHard(a) : false;
+    const cb = iter < 24 ? containHard(b) : false;
+    const g = fishGap(a, b);
+    if (iter === 0 && g.gap < SOFT_GAP && g.gap >= MIN_GAP) {
+      // soft cushion: a gentle sub-pixel nudge long before the hard limit is reached
+      const dx = a.spineX[g.i] - b.spineX[g.j];
+      const dy = a.spineY[g.i] - b.spineY[g.j];
+      const d = Math.hypot(dx, dy) || 1;
+      const k = (SOFT_GAP - g.gap) * 0.04;
+      translateFish(a, (dx / d) * k * 0.5, (dy / d) * k * 0.5);
+      translateFish(b, (-dx / d) * k * 0.5, (-dy / d) * k * 0.5);
+      return;
+    }
+    if (g.gap >= MIN_GAP) return;
+    let dx = a.spineX[g.i] - b.spineX[g.j];
+    let dy = a.spineY[g.i] - b.spineY[g.j];
+    let d = Math.hypot(dx, dy);
+    if (d < 1e-3) {
+      dx = a.pos.x - b.pos.x;
+      dy = a.pos.y - b.pos.y;
+      d = Math.hypot(dx, dy) || 1;
+    }
+    const need = MIN_GAP - g.gap + 0.5;
+    const root = Math.ceil(S_TAIL_ROOT * (SPINE_N - 1));
+    if ((g.i >= root || g.j >= root) && iter < 12) {
+      // a veil is in the way: the flexible veil(s) bend aside instead of shoving whole fish
+      const ux = dx / d;
+      const uy = dy / d;
+      const both = g.i >= root && g.j >= root;
+      if (g.i >= root) bendTail(a, g.i, ux * need * (both ? 0.5 : 1), uy * need * (both ? 0.5 : 1));
+      if (g.j >= root) bendTail(b, g.j, -ux * need * (both ? 0.5 : 1), -uy * need * (both ? 0.5 : 1));
+      hardStats.pushes++;
+      continue;
+    }
+    // whole-fish push: sum the correction over EVERY violating pair (position-based solve), so
+    // crossing bodies get one consistent separating direction instead of oscillating
+    let sx = 0;
+    let sy = 0;
+    let worst = 0;
+    for (let p = 0; p < SPINE_N; p++) {
+      for (let q = 0; q < SPINE_N; q++) {
+        const ex = a.spineX[p] - b.spineX[q];
+        const ey = a.spineY[p] - b.spineY[q];
+        const ed = Math.hypot(ex, ey);
+        const def = MIN_GAP + 0.5 - (ed - halfWidth(a, p) - halfWidth(b, q));
+        if (def <= 0) continue;
+        worst = Math.max(worst, def);
+        sx += (ed > 1e-3 ? ex / ed : dx / d) * def;
+        sy += (ed > 1e-3 ? ey / ed : dy / d) * def;
+      }
+    }
+    let sl = Math.hypot(sx, sy);
+    if (iter >= 24 || sl < 1e-6) {
+      // last resort: slide the whole fish apart along the centroid line — always terminates
+      let cax = 0, cay = 0, cbx = 0, cby = 0;
+      for (let p = 0; p < SPINE_N; p++) {
+        cax += a.spineX[p]; cay += a.spineY[p]; cbx += b.spineX[p]; cby += b.spineY[p];
+      }
+      sx = cax - cbx;
+      sy = cay - cby;
+      sl = Math.hypot(sx, sy);
+    }
+    if (sl < 1e-6) {
+      sx = a.pos.x - b.pos.x;
+      sy = a.pos.y - b.pos.y;
+      sl = Math.hypot(sx, sy) || 1;
+    }
+    const ux = sx / sl;
+    const uy = sy / sl;
+    const step = Math.max(need, worst) * (iter < 24 ? 0.6 : 1.0);
+    hardStats.pushes++;
+    hardStats.px += step;
+    hardStats.maxPx = Math.max(hardStats.maxPx, step);
+    // a fish pinned on the wall does not move; the other one takes the whole push
+    const wa = ca && !cb ? 0.1 : !ca && cb ? 0.9 : 0.5;
+    translateFish(a, ux * step * wa, uy * step * wa);
+    translateFish(b, -ux * step * (1 - wa), -uy * step * (1 - wa));
+    const away = Math.atan2(uy, ux);
+    a.heading += clamp(angDiff(a.heading, away), -0.02, 0.02);
+    b.heading += clamp(angDiff(b.heading, away + Math.PI), -0.02, 0.02);
+  }
 }
 
 function bodyLen(f: Fish) {
   return KOI_LEN * f.scale * (1 - f.depth * 0.06);
 }
 
-function initSpine(f: Fish) {
+/**
+ * Seed the head-path history with an arc behind the head (bend = total turn in radians
+ * over one body length), so the fish starts in the painted C/S pose instead of a stick.
+ */
+function initSpine(f: Fish, bend = 0) {
   const L = bodyLen(f);
-  const seg = L / (SPINE_N - 1);
-  const c = Math.cos(f.heading);
-  const s = Math.sin(f.heading);
-  for (let i = 0; i < SPINE_N; i++) {
-    f.spineX[i] = f.pos.x - c * seg * i;
-    f.spineY[i] = f.pos.y - s * seg * i;
-    f.tanX[i] = c;
-    f.tanY[i] = s;
-    f.lat[i] = 0;
+  const total = L * 1.6;
+  const n = Math.min(HIST, Math.ceil(total / 2));
+  // walk backwards from the head: direction = heading + PI, turning by bend per L
+  let x = f.pos.x;
+  let y = f.pos.y;
+  let a = f.heading + Math.PI;
+  const pts: number[] = [];
+  for (let i = 0; i < n; i++) {
+    pts.push(x, y);
+    const st = total / n;
+    a += (bend / L) * st * (i * st < L * 0.25 ? 0.3 : i * st < L ? 1.3 : 0.3);
+    x += Math.cos(a) * st;
+    y += Math.sin(a) * st;
   }
-  initTail(f);
+  // history is stored oldest → newest
+  f.histN = 0;
+  f.histHead = 0;
+  for (let i = n - 1; i >= 0; i--) pushHist(f, pts[i * 2], pts[i * 2 + 1]);
+  // forward heading continues the arc
+  f.heading -= (bend / L) * 4;
+  layoutSpine(f, true);
 }
 
-function initTail(f: Fish) {
-  const L = bodyLen(f);
-  const root = Math.floor(S_TAIL_ROOT * (SPINE_N - 1));
-  const rx = f.spineX[root];
-  const ry = f.spineY[root];
-  const tx = f.tanX[root];
-  const ty = f.tanY[root];
-  const nx = -ty;
-  const ny = tx;
-  const seg = (L * (1 - S_TAIL_ROOT)) / (TAIL_N - 1);
-  for (let i = 0; i < TAIL_N; i++) {
-    const flare = 0.06 + 0.08 * (i / (TAIL_N - 1));
-    const ox = nx * (L * flare);
-    const oy = ny * (L * flare);
-    f.tailUX[i] = rx - tx * seg * i + ox;
-    f.tailUY[i] = ry - ty * seg * i + oy;
-    f.tailUPx[i] = f.tailUX[i];
-    f.tailUPy[i] = f.tailUY[i];
-    f.tailLX[i] = rx - tx * seg * i - ox;
-    f.tailLY[i] = ry - ty * seg * i - oy;
-    f.tailLPx[i] = f.tailLX[i];
-    f.tailLPy[i] = f.tailLY[i];
-  }
+function pushHist(f: Fish, x: number, y: number) {
+  f.histHead = (f.histHead + 1) % HIST;
+  f.histX[f.histHead] = x;
+  f.histY[f.histHead] = y;
+  if (f.histN < HIST) f.histN++;
 }
 
 /** Start poses roughly matching target.png yin-yang. */
 export function createSim(reduced: boolean): SimState {
   // Upper fish: head right-ish; lower: circling opposite
-  const a = makeFish(340, 250, 0.35, 1.2, 1.0, 0);
-  const b = makeFish(500, 380, -2.5, 2.8, 0.92, 1);
-  a.burstT = 1.2;
-  b.burstT = 0.4;
-  b.glideT = 0.6;
+  // matched to TARGET_FINAL: upper-left koi head ≈ (381,271) heading down-right, C-curve;
+  // lower-right koi head ≈ (421,342) heading left, veil sweeping up-right (yin-yang)
+  const a = makeFish(384, 266, 0.5, 1.2, 1.0, 0, -2.5);
+  const b = makeFish(420, 346, Math.PI + 0.05, 2.8, 0.96, 1, -2.3);
+  a.burstT = 0;
+  a.glideT = 1.4;
+  b.burstT = 0;
+  b.glideT = 2.2;
+  a.speed = b.speed = 20;
+  a.beatEnergy = b.beatEnergy = 0.2;
   return {
     fish: [a, b],
-    pellets: Array.from({ length: MAX_PELLETS }, () => ({
-      x: 0, y: 0, vx: 0, vy: 0, age: 0, alive: false,
-    })),
     pointer: null,
     pointerVel: 0,
     pointerStill: 0,
@@ -261,28 +426,57 @@ function steerFish(sim: SimState, f: Fish, other: Fish, dt: number) {
     if (f.pos.x < 160 && f.pos.y < 150) {
       n = norm(1.5, 1.2);
     }
-    desireX += n.x * 2.5;
-    desireY += n.y * 2.5;
-    wSum += 2.5;
+    desireX += n.x * 6;
+    desireY += n.y * 6;
+    wSum += 6;
   }
 
-  // separation + loose cohesion (yin-yang)
-  const dx = f.pos.x - other.pos.x;
-  const dy = f.pos.y - other.pos.y;
-  const dist = Math.hypot(dx, dy);
-  if (dist < SEPARATION && dist > 1e-3) {
-    n = norm(dx, dy);
-    const sep = (SEPARATION - dist) / SEPARATION;
-    desireX += n.x * sep * 2;
-    desireY += n.y * sep * 2;
-    wSum += sep * 2;
-  } else if (dist < L * 2.2) {
-    desireX += Math.cos(other.heading) * 0.3;
-    desireY += Math.sin(other.heading) * 0.3;
-    n = norm(other.pos.x - f.pos.x, other.pos.y - f.pos.y);
-    desireX += n.x * 0.2;
-    desireY += n.y * 0.2;
-    wSum += 0.5;
+  // separation — predictive and body-aware: every spine point of this fish (now and ~0.8s
+  // ahead) against every spine point of the other, using the real body/veil half-widths.
+  {
+    const ahead = 0.8;
+    const fvx = Math.cos(f.heading) * f.speed * ahead;
+    const fvy = Math.sin(f.heading) * f.speed * ahead;
+    const ovx = Math.cos(other.heading) * other.speed * ahead;
+    const ovy = Math.sin(other.heading) * other.speed * ahead;
+    let best = Infinity;
+    let ax = 0;
+    let ay = 0;
+    for (let i = 0; i < SPINE_N; i += 1) {
+      // head region is what steers, so weight the front half more
+      const wi = i < SPINE_N / 2 ? 1 : 0.6;
+      for (let j = 0; j < SPINE_N; j += 1) {
+        for (let k = 0; k < 2; k++) {
+          const px = f.spineX[i] + (k ? fvx : 0);
+          const py = f.spineY[i] + (k ? fvy : 0);
+          const qx = other.spineX[j] + (k ? ovx : 0);
+          const qy = other.spineY[j] + (k ? ovy : 0);
+          const gap = (Math.hypot(px - qx, py - qy) - halfWidth(f, i) - halfWidth(other, j)) / wi;
+          if (gap < best) {
+            best = gap;
+            ax = px - qx;
+            ay = py - qy;
+          }
+        }
+      }
+    }
+    const zone = L * 0.7;
+    if (best < zone) {
+      n = norm(ax, ay);
+      const w = 12 * Math.pow(1 - Math.max(-zone, best) / zone, 2);
+      desireX += n.x * w;
+      desireY += n.y * w;
+      wSum += w;
+      if (best < zone * 0.4) f.burstT = Math.max(f.burstT, 0.4);
+    } else {
+      const dist = Math.hypot(f.pos.x - other.pos.x, f.pos.y - other.pos.y);
+      if (dist < L * 2.4) {
+        // loose companionship: drift roughly the same way, never toward each other
+        desireX += Math.cos(other.heading) * 0.25;
+        desireY += Math.sin(other.heading) * 0.25;
+        wSum += 0.25;
+      }
+    }
   }
 
   // flee
@@ -304,9 +498,11 @@ function steerFish(sim: SimState, f: Fish, other: Fish, dt: number) {
   }
 
   // curiosity
-  if (!fleeing && sim.pointer && sim.pointerStill > CURIOSITY_STILL && f.eatT <= 0) {
+  if (!fleeing && sim.pointer && sim.pointerStill > CURIOSITY_STILL ) {
     const pd = Math.hypot(f.pos.x - sim.pointer.x, f.pos.y - sim.pointer.y);
-    if (pd < L * 2.5 || f.curiousT > 0) {
+    const od = Math.hypot(other.pos.x - sim.pointer.x, other.pos.y - sim.pointer.y);
+    // only the nearer koi comes to look; the other keeps its distance
+    if ((pd < L * 2.5 || f.curiousT > 0) && !(other.curiousT > 0 && od < pd)) {
       f.curiousT += dt;
       if (f.curiousT < 6) {
         const ax = sim.pointer.x - f.pos.x;
@@ -318,7 +514,7 @@ function steerFish(sim: SimState, f: Fish, other: Fish, dt: number) {
           desireY += n.y * 1.6;
           wSum += 1.6;
         } else {
-          f.heading += angDiff(f.heading, Math.atan2(ay, ax)) * 0.1;
+          f.turnRate += (clamp(angDiff(f.heading, Math.atan2(ay, ax)) * 1.2, -0.6, 0.6) - f.turnRate) * 0.05;
           f.burstT = 0;
           f.glideT = 1;
         }
@@ -331,59 +527,30 @@ function steerFish(sim: SimState, f: Fish, other: Fish, dt: number) {
     if (f.curiousT > 0) f.curiousT = 0;
   }
 
-  // food
-  let best = -1;
-  let bestD = 400;
-  for (let i = 0; i < MAX_PELLETS; i++) {
-    const p = sim.pellets[i];
-    if (!p.alive) continue;
-    const d = Math.hypot(p.x - f.pos.x, p.y - f.pos.y);
-    if (d < bestD) {
-      bestD = d;
-      best = i;
-    }
-  }
-  if (best >= 0) {
-    if (f.reactT > 0) f.reactT -= dt;
-    else {
-      f.targetPellet = best;
-      const p = sim.pellets[best];
-      n = norm(p.x - f.pos.x, p.y - f.pos.y);
-      desireX += n.x * 2.8;
-      desireY += n.y * 2.8;
-      wSum += 2.8;
-      f.burstT = Math.max(f.burstT, 0.6);
-      if (bestD < 16) {
-        p.alive = false;
-        f.eatT = 0.3;
-        f.headScale = 1.05;
-        sim.pendingDrops.push({ x: p.x / W, y: p.y / H, r: 0.025, s: 0.2 });
-      }
-    }
-  } else {
-    f.targetPellet = -1;
-  }
-
   if (wSum > 1e-5) {
     desireX /= wSum;
     desireY /= wSum;
   }
   const desiredAng = Math.atan2(desireY, desireX);
-  const turnCap = fleeing ? 3.2 : TURN_MAX;
-  const dHeading = clamp(angDiff(f.heading, desiredAng), -turnCap * dt, turnCap * dt);
-  f.heading += dHeading;
-  f.turnRate = dt > 1e-6 ? dHeading / dt : 0;
+  // koi turn by bending: the tightest path radius is ~0.3 body lengths, and the turn rate
+  // eases in/out (no snapping). Slow fish can still pivot a little.
+  const rMin = L * (fleeing ? 0.22 : 0.3);
+  const turnCap = Math.min(fleeing ? 3.0 : TURN_MAX, Math.max(0.6, f.speed / rMin));
+  const err = angDiff(f.heading, desiredAng);
+  const wantRate = clamp(err * 1.6, -turnCap, turnCap);
+  f.turnRate += (wantRate - f.turnRate) * Math.min(1, dt * (fleeing ? 8 : 3));
+  f.heading += f.turnRate * dt;
 
   // burst / glide rhythm
   if (sim.reduced) {
     f.speed = lerp(f.speed, SPEED_GLIDE_MIN * 1.2, dt * 2);
     f.beatEnergy = 0.2;
-  } else if (fleeing || f.targetPellet >= 0) {
+  } else if (fleeing) {
     f.speed = lerp(f.speed, SPEED_BURST * (fleeing ? 1.15 : 1), dt * 3);
     f.beatEnergy = lerp(f.beatEnergy, 1, dt * 4);
     f.burstT = Math.max(f.burstT, 0.3);
   } else if (f.curiousT > 0 && f.glideT > 0) {
-    f.speed = lerp(f.speed, 12, dt * 2);
+    f.speed = lerp(f.speed, 14, dt * 2);
     f.beatEnergy = lerp(f.beatEnergy, 0.25, dt * 2);
   } else if (f.burstT > 0) {
     f.burstT -= dt;
@@ -392,7 +559,7 @@ function steerFish(sim: SimState, f: Fish, other: Fish, dt: number) {
     if (f.burstT <= 0) f.glideT = 1 + Math.random() * 1.5;
   } else {
     f.glideT -= dt;
-    f.speed = Math.max(SPEED_GLIDE_MIN, f.speed - 28 * dt);
+    f.speed = Math.max(SPEED_GLIDE_MIN, f.speed - 20 * dt);
     f.beatEnergy = lerp(f.beatEnergy, 0.15, dt * 1.5);
     if (f.glideT <= 0) f.burstT = 0.35 + Math.random() * 0.55; // 2–4 quick beats ≈ 0.4–0.9s
   }
@@ -403,23 +570,24 @@ function steerFish(sim: SimState, f: Fish, other: Fish, dt: number) {
   f.pos.x += f.vel.x * dt;
   f.pos.y += f.vel.y * dt;
 
-  if (!Number.isFinite(f.pos.x) || f.pos.x < -40 || f.pos.x > W + 40 || f.pos.y < -40 || f.pos.y > H + 40) {
+  if (!Number.isFinite(f.pos.x) || !Number.isFinite(f.pos.y)) {
     f.pos.x = clamp(f.pos.x, INSET + 30, W - INSET - 30);
     f.pos.y = clamp(f.pos.y, INSET + 30, H - INSET - 30);
+    f.histN = 0;
     initSpine(f);
   }
 
-  const freq = lerp(1.0, 2.4, f.beatEnergy) * (fleeing ? 1.6 : 1) * (sim.reduced ? 0.45 : 1);
+  const freq = lerp(0.55, 1.9, f.beatEnergy) * (fleeing ? 1.6 : 1) * (sim.reduced ? 0.45 : 1);
   f.phase += TWO_PI * freq * dt;
 
   // water motion from swimming — continuous trail + beat pulses at the veil tip
-  const tipX = (f.tailUX[TAIL_N - 1] + f.tailLX[TAIL_N - 1]) * 0.5;
-  const tipY = (f.tailUY[TAIL_N - 1] + f.tailLY[TAIL_N - 1]) * 0.5;
-  const midX = (f.tailUX[Math.floor(TAIL_N * 0.45)] + f.tailLX[Math.floor(TAIL_N * 0.45)]) * 0.5;
-  const midY = (f.tailUY[Math.floor(TAIL_N * 0.45)] + f.tailLY[Math.floor(TAIL_N * 0.45)]) * 0.5;
-  if (!sim.reduced && f.speed > 18) {
+  const tipX = f.spineX[SPINE_N - 2];
+  const tipY = f.spineY[SPINE_N - 2];
+  const midX = f.spineX[Math.round(SPINE_N * 0.6)];
+  const midY = f.spineY[Math.round(SPINE_N * 0.6)];
+  if (!sim.reduced && f.speed > 22 && Math.floor(sim.time * 60) % 3 === 0) {
     // continuous wake scaled by speed — water should visibly churn behind them
-    const trail = (0.06 + f.speed * 0.0014) * (0.65 + f.beatEnergy * 0.55);
+    const trail = (0.03 + f.speed * 0.0008) * (0.5 + f.beatEnergy * 0.5);
     sim.pendingDrops.push({
       x: tipX / W,
       y: tipY / H,
@@ -455,183 +623,123 @@ function steerFish(sim: SimState, f: Fish, other: Fish, dt: number) {
   // pectorals: fold on burst, spread on glide/turn (~55°)
   const turning = Math.abs(angDiff(f.heading, desiredAng)) > 0.2;
   const bursting = f.burstT > 0 || fleeing;
-  const want = bursting ? 0.2 : turning || f.curiousT > 0 ? 0.96 : 0.75;
+  // glide: slow sculling paddle; burst: tucked; turn/curious: braking spread
+  const paddle = 0.12 * Math.sin(sim.time * 2.3 + f.noiseSeed * 5);
+  const want = bursting ? 0.12 : turning || f.curiousT > 0 ? 0.95 : 0.6 + paddle;
   f.finL += (want - f.finL) * dt * 6;
-  f.finR += ((turning ? want * 1.05 : want) - f.finR) * dt * 6;
+  f.finR += (want - (turning ? paddle : -paddle) - f.finR) * dt * 6;
 
   if (f.fleeT > 0) f.fleeT -= dt;
-  if (f.eatT > 0) {
-    f.eatT -= dt;
-    if (f.eatT <= 0) f.headScale = 1;
-  } else {
-    f.headScale += (1 - f.headScale) * dt * 5;
-  }
+  f.headScale += (1 - f.headScale) * dt * 5;
 }
 
 function updateSpine(f: Fish) {
+  const last = f.histHead;
+  if (f.histN === 0 || Math.hypot(f.pos.x - f.histX[last], f.pos.y - f.histY[last]) > 1.5) {
+    pushHist(f, f.pos.x, f.pos.y);
+  }
+  layoutSpine(f, false);
+}
+
+/**
+ * Spine = the head's own path (follow-the-leader), plus a travelling body wave whose
+ * amplitude grows toward the tail, plus inertia on the veil. Segment lengths are re-imposed
+ * and joint angles are clamped, so the mesh can never stretch, tear or fold over.
+ */
+function layoutSpine(f: Fish, snap: boolean) {
   const L = bodyLen(f);
   const seg = L / (SPINE_N - 1);
-  f.spineX[0] = f.pos.x;
-  f.spineY[0] = f.pos.y;
-  for (let i = 1; i < SPINE_N; i++) {
-    let dx = f.spineX[i] - f.spineX[i - 1];
-    let dy = f.spineY[i] - f.spineY[i - 1];
-    let d = Math.hypot(dx, dy);
-    if (d < 1e-6) {
-      dx = -Math.cos(f.heading);
-      dy = -Math.sin(f.heading);
-      d = 1;
+  // 1. sample the history by arc length
+  const px = new Float32Array(SPINE_N);
+  const py = new Float32Array(SPINE_N);
+  px[0] = f.pos.x;
+  py[0] = f.pos.y;
+  let k = 0;
+  let hx = f.pos.x;
+  let hy = f.pos.y;
+  let idx = f.histHead;
+  let travelled = 0;
+  let want = seg;
+  let i = 1;
+  let lastDx = -Math.cos(f.heading);
+  let lastDy = -Math.sin(f.heading);
+  while (i < SPINE_N && k < f.histN) {
+    const nx = f.histX[idx];
+    const ny = f.histY[idx];
+    const dx = nx - hx;
+    const dy = ny - hy;
+    const d = Math.hypot(dx, dy);
+    if (d > 1e-6) {
+      lastDx = dx / d;
+      lastDy = dy / d;
     }
-    if (i >= 2) {
-      const px = f.spineX[i - 1] - f.spineX[i - 2];
-      const py = f.spineY[i - 1] - f.spineY[i - 2];
-      const pa = Math.atan2(py, px);
-      let a = Math.atan2(dy, dx);
-      // keep lazy S-curves — hard bends read as shrimp curls
-      a = pa + clamp(angDiff(pa, a), -0.16, 0.16);
-      a = lerp(a, pa, 0.14);
-      dx = Math.cos(a);
-      dy = Math.sin(a);
-      d = 1;
+    while (i < SPINE_N && travelled + d >= want) {
+      const t = (want - travelled) / Math.max(d, 1e-6);
+      px[i] = hx + dx * t;
+      py[i] = hy + dy * t;
+      i++;
+      want += seg;
     }
-    const inv = seg / d;
-    f.spineX[i] = f.spineX[i - 1] + dx * inv;
-    f.spineY[i] = f.spineY[i - 1] + dy * inv;
+    travelled += d;
+    hx = nx;
+    hy = ny;
+    idx = (idx - 1 + HIST) % HIST;
+    k++;
   }
-
-  const Abody = A_BODY * L * f.beatEnergy;
-  const Atail = A_TAIL * L * f.beatEnergy;
-  for (let i = 0; i < SPINE_N; i++) {
-    const s = i / (SPINE_N - 1);
-    let tx: number;
-    let ty: number;
-    if (i < SPINE_N - 1) {
-      tx = f.spineX[i] - f.spineX[i + 1];
-      ty = f.spineY[i] - f.spineY[i + 1];
+  for (; i < SPINE_N; i++) {
+    px[i] = px[i - 1] + lastDx * seg;
+    py[i] = py[i - 1] + lastDy * seg;
+  }
+  // 2. tangents of the path + travelling wave on the normal
+  const be = f.beatEnergy;
+  const Abase = L * (0.012 + 0.03 * be);
+  for (let j = 0; j < SPINE_N; j++) {
+    const s = j / (SPINE_N - 1);
+    const a = Math.max(0, j - 1);
+    const b = Math.min(SPINE_N - 1, j + 1);
+    const t = norm(px[a] - px[b], py[a] - py[b]);
+    // head barely yaws, body bends a little, veil swings wide
+    const env = 0.15 + 0.6 * s * s + (s > S_TAIL_ROOT ? 1.6 * Math.pow((s - S_TAIL_ROOT) / (1 - S_TAIL_ROOT), 1.5) : 0);
+    const lat = Abase * env * Math.sin(f.phase - WAVE_K * s);
+    f.offX[j] *= 0.985;
+    f.offY[j] *= 0.985;
+    const tx = px[j] - t.y * lat + f.offX[j];
+    const ty = py[j] + t.x * lat + f.offY[j];
+    if (snap || j === 0) {
+      f.qX[j] = tx;
+      f.qY[j] = ty;
     } else {
-      tx = f.spineX[i - 1] - f.spineX[i];
-      ty = f.spineY[i - 1] - f.spineY[i];
-    }
-    const t = norm(tx, ty);
-    f.tanX[i] = t.x;
-    f.tanY[i] = t.y;
-    const bodyEnv = Math.pow(smoothstep(0.08, 0.55, s), 1.1);
-    const tailEnv = Math.pow(smoothstep(0.5, 1.0, s), 1.3);
-    const A = Abody * bodyEnv + Atail * Math.max(0, tailEnv - bodyEnv * 0.3);
-    let lat = A * Math.sin(f.phase - WAVE_K * s);
-    if (s < 0.04) lat *= 0.15;
-    f.lat[i] = lat;
-  }
-}
-
-function smoothstep(e0: number, e1: number, x: number) {
-  const t = clamp((x - e0) / (e1 - e0), 0, 1);
-  return t * t * (3 - 2 * t);
-}
-
-function updateTail(f: Fish) {
-  const L = bodyLen(f);
-  const root = Math.floor(S_TAIL_ROOT * (SPINE_N - 1));
-  const rx = f.spineX[root];
-  const ry = f.spineY[root];
-  const tx = f.tanX[root];
-  const ty = f.tanY[root];
-  const nx = -ty;
-  const ny = tx;
-  const segLen = (L * (1 - S_TAIL_ROOT)) / (TAIL_N - 1);
-  const drag = 0.9;
-  // pair-pose veil: narrow at peduncle, very wide flame tips
-  const halfAt = (i: number) => {
-    const t = i / (TAIL_N - 1);
-    return L * (0.06 + 0.16 * t * t);
-  };
-
-  const integrate = (
-    xs: Float32Array,
-    ys: Float32Array,
-    px: Float32Array,
-    py: Float32Array,
-    side: number,
-  ) => {
-    xs[0] = rx + nx * halfAt(0) * side;
-    ys[0] = ry + ny * halfAt(0) * side;
-    px[0] = xs[0];
-    py[0] = ys[0];
-    for (let i = 1; i < TAIL_N; i++) {
-      const vx = (xs[i] - px[i]) * drag;
-      const vy = (ys[i] - py[i]) * drag;
-      px[i] = xs[i];
-      py[i] = ys[i];
-      xs[i] += vx;
-      ys[i] += vy;
-      const stiff = 0.1 * (1 - i / (TAIL_N - 1));
-      const restX = rx - tx * segLen * i + nx * halfAt(i) * side;
-      const restY = ry - ty * segLen * i + ny * halfAt(i) * side;
-      xs[i] += (restX - xs[i]) * stiff;
-      ys[i] += (restY - ys[i]) * stiff;
-      if (i > TAIL_N - 4) {
-        xs[i] += Math.sin(f.phase * 0.5 + i * 0.4 + side) * 0.8 * f.beatEnergy;
-        ys[i] += Math.cos(f.phase * 0.4 + i * 0.3) * 0.6 * f.beatEnergy;
-      }
-    }
-    for (let iter = 0; iter < 3; iter++) {
-      for (let i = 1; i < TAIL_N; i++) {
-        let dx = xs[i] - xs[i - 1];
-        let dy = ys[i] - ys[i - 1];
-        const d = Math.hypot(dx, dy) || 1;
-        const diff = (d - segLen) / d;
-        if (i === 1) {
-          xs[i] -= dx * diff;
-          ys[i] -= dy * diff;
-        } else {
-          xs[i] -= dx * 0.5 * diff;
-          ys[i] -= dy * 0.5 * diff;
-          xs[i - 1] += dx * 0.5 * diff;
-          ys[i - 1] += dy * 0.5 * diff;
-        }
-      }
-      xs[0] = rx + nx * halfAt(0) * side;
-      ys[0] = ry + ny * halfAt(0) * side;
-    }
-  };
-
-  integrate(f.tailUX, f.tailUY, f.tailUPx, f.tailUPy, 1);
-  integrate(f.tailLX, f.tailLY, f.tailLPx, f.tailLPy, -1);
-}
-
-function updatePellets(sim: SimState, dt: number) {
-  for (const p of sim.pellets) {
-    if (!p.alive) continue;
-    p.age += dt;
-    p.vx += Math.sin(p.y * 0.02 + sim.time * 0.3) * 3 * dt;
-    p.vy += Math.cos(p.x * 0.02 - sim.time * 0.25) * 2 * dt;
-    p.vx *= 0.98;
-    p.vy *= 0.98;
-    p.x += p.vx * dt;
-    p.y += p.vy * dt;
-    if (p.age > 12) p.alive = false;
-  }
-}
-
-export function feedAt(sim: SimState, x: number, y: number) {
-  let slot = -1;
-  for (let i = 0; i < MAX_PELLETS; i++) {
-    if (!sim.pellets[i].alive) {
-      slot = i;
-      break;
+      // veil inertia: points toward the tip follow their target more lazily
+      const u = Math.max(0, (s - S_TAIL_ROOT * 0.7) / (1 - S_TAIL_ROOT * 0.7));
+      const follow = 1 - 0.8 * u;
+      f.qX[j] += (tx - f.qX[j]) * follow;
+      f.qY[j] += (ty - f.qY[j]) * follow;
     }
   }
-  if (slot < 0) return;
-  const p = sim.pellets[slot];
-  p.alive = true;
-  p.x = x;
-  p.y = y;
-  p.vx = 0;
-  p.vy = 0;
-  p.age = 0;
-  sim.pendingDrops.push({ x: x / W, y: y / H, r: 0.03, s: 0.28 });
-  for (const f of sim.fish) {
-    f.reactT = 0.15 + Math.hypot(f.pos.x - x, f.pos.y - y) / 500 * 0.5;
+  // 3. re-impose segment length + joint limits head → tail
+  let pa = Math.atan2(f.qY[0] - f.qY[1], f.qX[0] - f.qX[1]);
+  f.spineX[0] = f.qX[0];
+  f.spineY[0] = f.qY[0];
+  for (let j = 1; j < SPINE_N; j++) {
+    const s = j / (SPINE_N - 1);
+    let a = Math.atan2(f.spineY[j - 1] - f.qY[j], f.spineX[j - 1] - f.qX[j]);
+    const lim = s > S_TAIL_ROOT ? 0.3 : 0.2;
+    a = pa + clamp(angDiff(pa, a), -lim, lim);
+    f.spineX[j] = f.spineX[j - 1] - Math.cos(a) * seg;
+    f.spineY[j] = f.spineY[j - 1] - Math.sin(a) * seg;
+    f.qX[j] = f.spineX[j];
+    f.qY[j] = f.spineY[j];
+    f.curv[j - 1] = angDiff(pa, a) / seg;
+    pa = a;
+  }
+  f.curv[SPINE_N - 1] = f.curv[SPINE_N - 2];
+  for (let j = 0; j < SPINE_N; j++) {
+    const a = Math.max(0, j - 1);
+    const b = Math.min(SPINE_N - 1, j + 1);
+    const t = norm(f.spineX[a] - f.spineX[b], f.spineY[a] - f.spineY[b]);
+    f.tanX[j] = t.x;
+    f.tanY[j] = t.y;
+    f.lat[j] = 0;
   }
 }
 
@@ -663,9 +771,8 @@ export function stepSim(sim: SimState, dt: number, acc: number): number {
     steerFish(sim, sim.fish[1], sim.fish[0], FISH_DT);
     for (const f of sim.fish) {
       updateSpine(f);
-      updateTail(f);
     }
-    updatePellets(sim, FISH_DT);
+    separateHard(sim.fish[0], sim.fish[1]);
     a -= FISH_DT;
     steps++;
   }
