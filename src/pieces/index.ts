@@ -7,8 +7,8 @@ import type { PieceDefinition } from "./types";
  * That's it. Coordinates are world units (1 unit == 1 CSS px at 100% zoom).
  * Layout: pieces sit on a plus-shaped grid of 1500-unit cells. Each piece is centred
  * on its cell (cell (i, j) has its centre at i*1500, j*1500), so the spacing is even.
- * The canvas opens zoomed out to fit every live piece (sunset + koi). Sunset sits on
- * the world origin (cell (0, 0)). Fill the empty diagonal cells (±1, ±1) next.
+ * The canvas opens zoomed out to fit every live piece (sunset + koi + ascii wing).
+ * Sunset sits on the world origin (cell (0, 0)). Fill the empty diagonal cells (±1, ±1) next.
  */
 export const pieces: PieceDefinition[] = [
   {
@@ -48,18 +48,18 @@ export const pieces: PieceDefinition[] = [
   //   maxResolution: 2,
   //   load: () => import("./pixel-sea"),
   // },
-  // {
-  //   slug: "ascii-wing",
-  //   title: "ASCII wing",
-  //   date: "Nov 2026",
-  //   // Grid cell (-1, 0): left of sunset
-  //   x: -2000,
-  //   y: -250,
-  //   width: 1000,
-  //   height: 500,
-  //   maxResolution: 1.5,
-  //   load: () => import("./ascii-wing"),
-  // },
+  {
+    slug: "ascii-wing",
+    title: "ASCII wing",
+    date: "Nov 2026",
+    // Grid cell (-1, 0): left of sunset. Portrait, like a cabin window.
+    x: -1830,
+    y: -460,
+    width: 660,
+    height: 920,
+    maxResolution: 1.5,
+    load: () => import("./ascii-wing"),
+  },
   // {
   //   slug: "snoopy",
   //   title: "Sleeping Snoopy",
