@@ -158,7 +158,8 @@ function ensureStyles() {
   white-space: pre-wrap;
   overflow: hidden;
   text-align: center;
-  color: #14191f;
+  color: #000;
+  text-shadow: 0 0 0.5px #000, 0 0 0.5px #000;
   -webkit-font-smoothing: antialiased;
   user-select: none;
   -webkit-user-select: none;
