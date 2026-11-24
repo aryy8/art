@@ -156,27 +156,28 @@ function ensureStyles() {
   overflow: hidden;
   text-align: center;
   color: rgba(29, 36, 43, 0.78);
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-user-drag: none;
+}
+/* Only selectable once the piece is open, so panning the canvas never highlights lyrics. */
+.piece.is-focused [data-carol] .carol-text {
+  touch-action: auto;
   user-select: text;
   -webkit-user-select: text;
   cursor: text;
-  -webkit-user-drag: none;
-}
-.piece.is-focused [data-carol] .carol-text {
-  touch-action: auto;
-}
-[data-carol] .carol-text .line {
-  user-select: text;
-  -webkit-user-select: text;
-}
-[data-carol] .carol-text .line.is-lit {
-  color: #fff;
-  text-shadow: 0 0 2px rgba(0, 0, 0, 0.45);
 }
 [data-carol] .carol-text::selection,
 [data-carol] .carol-text *::selection {
-  background: transparent !important;
-  background-color: transparent !important;
-  color: inherit !important;
+  background: transparent;
+  background-color: transparent;
+  color: inherit;
+}
+/* Just the highlighted words turn white over the cover, not the whole line. */
+.piece.is-focused [data-carol] .carol-text::selection,
+.piece.is-focused [data-carol] .carol-text *::selection {
+  color: #fff;
+  text-shadow: 0 0 2px rgba(0, 0, 0, 0.45);
 }
 `;
 }
@@ -454,11 +455,9 @@ const mount: MountPiece = async (ctx): Promise<PieceInstance> => {
   await new Promise<void>((r) => requestAnimationFrame(() => r()));
 
   const songChars = fillLyrics(text);
-  const lineEls = () => text.querySelectorAll<HTMLElement>(".line");
 
   const g = canvas.getContext("2d");
   const piano = new Piano();
-  const lit = new Set<HTMLElement>();
   let baked: HTMLCanvasElement | null = null;
   let bakedW = 0;
   let bakedH = 0;
@@ -493,14 +492,8 @@ const mount: MountPiece = async (ctx): Promise<PieceInstance> => {
     g.clearRect(0, 0, canvas.width, canvas.height);
   };
 
-  const clearLit = () => {
-    for (const el of lit) el.classList.remove("is-lit");
-    lit.clear();
-  };
-
   const clearAll = () => {
     clearCover();
-    clearLit();
     piano.stop();
   };
 
@@ -555,21 +548,6 @@ const mount: MountPiece = async (ctx): Promise<PieceInstance> => {
     g.restore();
   };
 
-  const lightLines = (range: Range) => {
-    const next = new Set<HTMLElement>();
-    for (const el of lineEls()) {
-      if (range.intersectsNode(el)) next.add(el);
-    }
-    for (const el of lit) {
-      if (!next.has(el)) el.classList.remove("is-lit");
-    }
-    for (const el of next) {
-      if (!lit.has(el)) el.classList.add("is-lit");
-    }
-    lit.clear();
-    for (const el of next) lit.add(el);
-  };
-
   /** How much text is selected vs one full song — direction-agnostic. */
   const selectionAmount = (range: Range): number => {
     if (songChars < 1) return 0;
@@ -601,7 +579,6 @@ const mount: MountPiece = async (ctx): Promise<PieceInstance> => {
     if (!root.contains(range.commonAncestorContainer) && !range.intersectsNode(text)) return;
 
     paintSelection(range);
-    lightLines(range);
     piano.followAmount(selectionAmount(range));
   };
 
@@ -620,7 +597,6 @@ const mount: MountPiece = async (ctx): Promise<PieceInstance> => {
     const sel = window.getSelection();
     if (sel && root.contains(sel.anchorNode)) sel.removeAllRanges();
     clearCover();
-    clearLit();
     piano.beginGesture();
   };
   const onMove = () => {
