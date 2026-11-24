@@ -201,11 +201,13 @@ class Piano {
   private ctx: AudioContext | null = null;
   private instrument: SplendidGrandPiano | null = null;
   private ready: Promise<void> | null = null;
-  private chain: Promise<void> = Promise.resolve();
-  private stops: StopFn[] = [];
-  private peak = 0;
-  private nextTime = 0;
-  private gesturing = false;
+  private loaded = false;
+  /** Notes handed to the sampler for the current selection, in play order. */
+  private voices: { g: number; t: number; end: number; stop: StopFn }[] = [];
+  /** Lyric positions (global syllable index) already played for this selection. */
+  private played = new Set<number>();
+  /** The selected span of syllables we want to hear, inclusive. */
+  private want: [number, number] | null = null;
   private gen = 0;
 
   preload() {
@@ -216,41 +218,44 @@ class Piano {
     void this.ensure(true);
   }
 
+  /** A fresh press: silence the last run and start listening again. */
   beginGesture() {
-    this.gen += 1;
+    this.stop();
     void this.ensure(true);
-    this.stopVoices();
-    this.peak = 0;
-    this.nextTime = 0;
-    this.gesturing = true;
-  }
-
-  endGesture() {
-    this.gesturing = false;
   }
 
   stop() {
     this.gen += 1;
-    this.stopVoices();
-    this.peak = 0;
-    this.nextTime = 0;
-    this.gesturing = false;
+    this.want = null;
+    const at = this.ctx?.currentTime;
+    for (const v of this.voices) {
+      try {
+        v.stop(at);
+      } catch {
+        /* ended */
+      }
+    }
+    this.voices = [];
+    this.played.clear();
   }
 
-  followAmount(amount: number) {
-    if (amount <= 0) return;
-    const needed = Math.max(1, Math.min(SONG, Math.round(amount * SONG) || 1));
-    if (!this.gesturing && needed < this.peak) {
-      this.stopVoices();
-      this.peak = 0;
-      this.nextTime = 0;
+  /**
+   * Play the melody for syllables [from, to] (global indices, song order).
+   * Newly covered syllables are queued in time; syllables that leave the selection
+   * before they sound are cancelled, so the piano tracks the highlight.
+   */
+  follow(from: number, to: number) {
+    if (to < from) return;
+    if (to - from >= SONG) to = from + SONG - 1; // at most one full song per selection
+    this.want = [from, to];
+    if (this.loaded && this.ctx?.state === "running") {
+      this.apply();
+      return;
     }
-    if (needed <= this.peak) return;
-    const from = this.peak;
-    this.peak = needed;
-    const ids = Array.from({ length: needed - from }, (_, i) => from + i);
     const stamp = this.gen;
-    this.chain = this.chain.catch(() => undefined).then(() => this.schedule(ids, stamp));
+    void this.ensure(true).then(() => {
+      if (stamp === this.gen) this.apply();
+    });
   }
 
   dispose() {
@@ -267,26 +272,67 @@ class Piano {
     if (ctx) void ctx.close();
   }
 
-  private stopVoices() {
-    const at = this.ctx?.currentTime;
-    for (const stop of this.stops) {
-      try {
-        stop(at);
-      } catch {
-        /* ended */
+  private apply() {
+    const ctx = this.ctx;
+    const inst = this.instrument;
+    const want = this.want;
+    if (!ctx || !inst || !want) return;
+    const [a, b] = want;
+    const now = ctx.currentTime;
+
+    // Drop notes that are no longer highlighted; ones already ringing finish naturally.
+    const keep: typeof this.voices = [];
+    for (const v of this.voices) {
+      if (v.g < a || v.g > b) {
+        this.played.delete(v.g);
+        if (v.t > now + 0.005) {
+          v.stop(now);
+          continue;
+        }
       }
+      if (v.end > now - 1) keep.push(v);
     }
-    this.stops = [];
-    try {
-      this.instrument?.stop();
-    } catch {
-      /* idle */
+    this.voices = keep;
+
+    const fresh: number[] = [];
+    for (let g = a; g <= b; g++) if (!this.played.has(g)) fresh.push(g);
+    if (fresh.length === 0) return;
+    // Growing backwards (dragging up/left)? Walk outwards from the old edge, like a scrub.
+    const lo = this.played.size ? Math.min(...this.played) : Infinity;
+    const below = fresh.filter((g) => g < lo).reverse();
+    const rest = fresh.filter((g) => g >= lo);
+    const order = this.played.size ? [...rest, ...below] : fresh;
+
+    let t = now + 0.04;
+    for (const v of this.voices) {
+      const slot = v.t + SCORE[v.g % SONG].beats * BEAT;
+      if (v.t >= now - 2 && slot > t) t = slot;
+    }
+    for (const g of order) {
+      const i = g % SONG;
+      const row = SCORE[i];
+      const dur = row.beats * BEAT;
+      const stop = inst.start({
+        note: row.midi,
+        time: t,
+        duration: Math.max(dur * 1.25, 0.28),
+        velocity: this.velocityFor(i, row.beats),
+      });
+      this.voices.push({ g, t, end: t + Math.max(dur * 1.25, 0.28) + 1, stop });
+      this.played.add(g);
+      t += dur;
     }
   }
 
   private async ensure(resume: boolean) {
     if (!this.ctx) this.ctx = new AudioContext();
-    if (resume && this.ctx.state !== "running") await this.ctx.resume();
+    if (resume && this.ctx.state !== "running") {
+      try {
+        await this.ctx.resume();
+      } catch {
+        /* needs a user gesture */
+      }
+    }
     if (!this.instrument) {
       const reverb = Reverb(this.ctx);
       // Real Steinway samples — every velocity layer so timbre changes with touch
@@ -304,6 +350,7 @@ class Piano {
       this.ready = Promise.all([this.instrument.ready, reverb.ready()]).then(() => {
         const decay = reverb.getParam("decay");
         if (decay) decay.value = 0.55;
+        this.loaded = true;
       });
     }
     if (this.ready) await this.ready;
@@ -320,62 +367,50 @@ class Piano {
     v += Math.round(Math.sin(i * 1.9) * 4);
     return Math.max(48, Math.min(118, v));
   }
-
-  private async schedule(ids: number[], stamp: number) {
-    await this.ensure(true);
-    if (stamp !== this.gen) return;
-    const ctx = this.ctx;
-    const inst = this.instrument;
-    if (!ctx || !inst || ids.length === 0) return;
-    const now = ctx.currentTime;
-    let t = this.nextTime > now + 0.02 ? this.nextTime : now + 0.04;
-    for (const i of ids) {
-      if (stamp !== this.gen) break;
-      const row = SCORE[i];
-      const dur = row.beats * BEAT;
-      const stop = inst.start({
-        note: row.midi,
-        time: t,
-        duration: Math.max(dur * 1.25, 0.28),
-        velocity: this.velocityFor(i, row.beats),
-      });
-      this.stops.push(stop);
-      t += dur;
-    }
-    if (stamp === this.gen) this.nextTime = t;
-  }
 }
 
+/** Where each syllable sits inside a line's text, so a selection maps back to notes. */
+type LineInfo = { g0: number; starts: number[]; ends: number[] };
+const LINE_INFO = new WeakMap<HTMLElement, LineInfo>();
+
 /** Build one song as a few line spans (smooth native select — not per-syllable). */
-function appendSong(el: HTMLElement) {
+function appendSong(el: HTMLElement, songIndex: number) {
   const block = document.createElement("span");
   block.className = "song";
   let buf = "";
+  let info: LineInfo = { g0: songIndex * SONG, starts: [], ends: [] };
   const flush = (last: boolean) => {
     const span = document.createElement("span");
     span.className = "line";
     span.textContent = buf.replace(/\s+$/, "");
+    LINE_INFO.set(span, info);
     block.appendChild(span);
     if (!last) block.appendChild(document.createTextNode("\n"));
     buf = "";
   };
   for (let s = 0; s < SONG; s++) {
     const row = SCORE[s];
+    if (info.starts.length === 0) info.g0 = songIndex * SONG + s;
+    info.starts.push(buf.length);
     buf += row.syl;
+    info.ends.push(buf.length);
     if (!row.join) buf += " ";
-    if (row.br || s === SONG - 1) flush(s === SONG - 1);
+    if (row.br || s === SONG - 1) {
+      flush(s === SONG - 1);
+      info = { g0: 0, starts: [], ends: [] };
+    }
   }
   el.appendChild(block);
 }
 
-function fillLyrics(el: HTMLElement): number {
+function fillLyrics(el: HTMLElement) {
   el.replaceChildren();
   el.style.paddingTop = "";
   const limit = el.clientHeight;
   // Stamp songs until the page is full, so the whole cover can be uncovered.
   for (let v = 0; v < MAX_REPEATS; v++) {
     if (v > 0) el.appendChild(document.createTextNode("\n"));
-    appendSong(el);
+    appendSong(el, v);
     if (el.scrollHeight > limit + 2) break;
   }
   // Trim whole lines (not whole songs) so the text runs to the bottom margin.
@@ -406,8 +441,6 @@ function fillLyrics(el: HTMLElement): number {
     const spare = el.clientHeight - pad - pb - used;
     if (spare > 1) el.style.paddingTop = `${pad + spare / 2}px`;
   }
-  const first = el.querySelector(".song");
-  return first?.textContent?.length ?? 1;
 }
 
 /** Bake a pixelated cover once; blit from this during selection. */
@@ -454,7 +487,7 @@ const mount: MountPiece = async (ctx): Promise<PieceInstance> => {
   await document.fonts.ready;
   await new Promise<void>((r) => requestAnimationFrame(() => r()));
 
-  const songChars = fillLyrics(text);
+  fillLyrics(text);
 
   const g = canvas.getContext("2d");
   const piano = new Piano();
@@ -548,10 +581,38 @@ const mount: MountPiece = async (ctx): Promise<PieceInstance> => {
     g.restore();
   };
 
-  /** How much text is selected vs one full song — direction-agnostic. */
-  const selectionAmount = (range: Range): number => {
-    if (songChars < 1) return 0;
-    return Math.min(1, Math.max(0, range.toString().length / songChars));
+  /** Which syllables (global index, song order) the selection covers, inclusive. */
+  const selectedSyllables = (range: Range): [number, number] | null => {
+    let first: HTMLElement | null = null;
+    let last: HTMLElement | null = null;
+    for (const el of text.querySelectorAll<HTMLElement>(".line")) {
+      if (!range.intersectsNode(el)) continue;
+      if (!first) first = el;
+      last = el;
+    }
+    if (!first || !last) return null;
+    const fi = LINE_INFO.get(first);
+    const li = LINE_INFO.get(last);
+    if (!fi || !li) return null;
+    const offsetIn = (el: HTMLElement, node: Node, offset: number, outside: number) => {
+      if (!el.contains(node)) return outside;
+      if (node.nodeType === Node.TEXT_NODE) return offset;
+      return offset > 0 ? (el.textContent?.length ?? 0) : 0;
+    };
+    const so = offsetIn(first, range.startContainer, range.startOffset, 0);
+    const eo = offsetIn(last, range.endContainer, range.endOffset, last.textContent?.length ?? 0);
+    let s = fi.ends.findIndex((e) => e > so);
+    if (s < 0) s = fi.ends.length; // started in the trailing gap → next line
+    let e = -1;
+    for (let k = li.starts.length - 1; k >= 0; k--) {
+      if (li.starts[k] < eo) {
+        e = k;
+        break;
+      }
+    }
+    const from = fi.g0 + s;
+    const to = li.g0 + e;
+    return to >= from ? [from, to] : null;
   };
 
   const sync = () => {
@@ -564,7 +625,6 @@ const mount: MountPiece = async (ctx): Promise<PieceInstance> => {
         if (!ctx.isFocused()) return;
         const s = window.getSelection();
         if (!s || s.isCollapsed || s.rangeCount === 0 || !root.contains(s.anchorNode)) {
-          piano.endGesture();
           clearAll();
         }
       }, 200);
@@ -579,7 +639,8 @@ const mount: MountPiece = async (ctx): Promise<PieceInstance> => {
     if (!root.contains(range.commonAncestorContainer) && !range.intersectsNode(text)) return;
 
     paintSelection(range);
-    piano.followAmount(selectionAmount(range));
+    const span = selectedSyllables(range);
+    if (span) piano.follow(span[0], span[1]);
   };
 
   /** One paint per frame — follows the caret without 64ms lag. */
@@ -606,7 +667,6 @@ const mount: MountPiece = async (ctx): Promise<PieceInstance> => {
   const onUp = () => {
     dragging = false;
     piano.resume();
-    piano.endGesture();
     requestSync();
   };
 
