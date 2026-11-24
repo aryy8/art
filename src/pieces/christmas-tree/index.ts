@@ -30,8 +30,8 @@ const SCORE: Row[] = [
   { syl: "bells,", midi: 64, beats: 2 },
   { syl: "jin", midi: 64, beats: 1, join: true },
   { syl: "gle", midi: 64, beats: 1 },
-  { syl: "bells", midi: 64, beats: 2 },
-  { syl: "Jin", midi: 64, beats: 1, join: true },
+  { syl: "bells,", midi: 64, beats: 2 },
+  { syl: "jin", midi: 64, beats: 1, join: true },
   { syl: "gle", midi: 67, beats: 1 }, // G4
   { syl: "all", midi: 60, beats: 1.5 }, // C4
   { syl: "the", midi: 62, beats: 0.5 }, // D4
@@ -44,7 +44,7 @@ const SCORE: Row[] = [
   { syl: "is", midi: 65, beats: 1 },
   { syl: "to", midi: 64, beats: 1 }, // E4
   { syl: "ride", midi: 64, beats: 1 },
-  { syl: "In", midi: 64, beats: 0.5 },
+  { syl: "in", midi: 64, beats: 0.5 },
   { syl: "a", midi: 64, beats: 0.5 },
   { syl: "one-", midi: 64, beats: 1, join: true },
   { syl: "horse", midi: 62, beats: 1 }, // D4
@@ -58,8 +58,8 @@ const SCORE: Row[] = [
   { syl: "bells,", midi: 64, beats: 2 },
   { syl: "jin", midi: 64, beats: 1, join: true },
   { syl: "gle", midi: 64, beats: 1 },
-  { syl: "bells", midi: 64, beats: 2 },
-  { syl: "Jin", midi: 64, beats: 1, join: true },
+  { syl: "bells,", midi: 64, beats: 2 },
+  { syl: "jin", midi: 64, beats: 1, join: true },
   { syl: "gle", midi: 67, beats: 1 },
   { syl: "all", midi: 60, beats: 1.5 },
   { syl: "the", midi: 62, beats: 0.5 },
@@ -72,7 +72,7 @@ const SCORE: Row[] = [
   { syl: "is", midi: 65, beats: 1 },
   { syl: "to", midi: 64, beats: 1 },
   { syl: "ride", midi: 64, beats: 1 },
-  { syl: "In", midi: 64, beats: 0.5 },
+  { syl: "in", midi: 64, beats: 0.5 },
   { syl: "a", midi: 64, beats: 0.5 },
   { syl: "one-", midi: 67, beats: 1, join: true }, // G4
   { syl: "horse", midi: 67, beats: 1 },
@@ -84,8 +84,8 @@ const SCORE: Row[] = [
   { syl: "ing", midi: 64, beats: 1 }, // E4
   { syl: "through", midi: 62, beats: 1 }, // D4
   { syl: "the", midi: 60, beats: 1 }, // C4
-  { syl: "snow", midi: 55, beats: 2 }, // G3
-  { syl: "In", midi: 55, beats: 1 },
+  { syl: "snow,", midi: 55, beats: 2 }, // G3
+  { syl: "in", midi: 55, beats: 1 },
   { syl: "a", midi: 55, beats: 1 },
   { syl: "one-", midi: 55, beats: 1, join: true },
   { syl: "horse", midi: 64, beats: 1 },
@@ -97,8 +97,8 @@ const SCORE: Row[] = [
   { syl: "the", midi: 65, beats: 1 }, // F4
   { syl: "fields", midi: 64, beats: 1 },
   { syl: "we", midi: 62, beats: 1 },
-  { syl: "go", midi: 59, beats: 2 }, // B3
-  { syl: "Laugh", midi: 67, beats: 1, join: true }, // G4
+  { syl: "go,", midi: 59, beats: 2 }, // B3
+  { syl: "laugh", midi: 67, beats: 1, join: true }, // G4
   { syl: "ing", midi: 67, beats: 1 },
   { syl: "all", midi: 65, beats: 1 },
   { syl: "the", midi: 62, beats: 1 },
@@ -677,7 +677,8 @@ const mount: MountPiece = async (ctx): Promise<PieceInstance> => {
   document.addEventListener("selectionchange", onSelect);
 
   sizeCanvas();
-  piano.preload();
+  // Audio waits until the piece is opened (no AudioContext on the overview).
+  if (ctx.isFocused()) piano.preload();
 
   return {
     frame() {},
