@@ -127,7 +127,7 @@ export class App {
   }
 
   private fitView(d: PieceDefinition): View {
-    return this.fitBounds([d]);
+    return this.fitBounds([d], d.focusPad ?? 1);
   }
 
   /** Fit one or more pieces into the viewport (with chrome insets). */
@@ -145,9 +145,14 @@ export class App {
     }
     const bw = Math.max(1, maxX - minX);
     const bh = Math.max(1, maxY - minY);
-    const s = Math.min(aw / bw, ah / bh) * pad;
+    // Never overscale past the content band — keeps the piece visually centered
+    // under the title instead of floating high with empty page below.
+    const sFit = Math.min(aw / bw, ah / bh);
+    const s = Math.min(sFit * pad, sFit * 1.08);
     const cx = (minX + maxX) / 2;
-    const cy = (minY + maxY) / 2 - (ins.top - ins.bottom) / 2 / s;
+    // Map piece center to the midpoint of the content band (below Art, above bottom).
+    const contentMid = ins.top + ah / 2;
+    const cy = (minY + maxY) / 2 - (contentMid - H / 2) / s;
     return { cx, cy, s };
   }
 

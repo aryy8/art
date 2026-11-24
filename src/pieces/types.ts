@@ -58,6 +58,11 @@ export interface PieceDefinition {
   height: number;
   /** Highest device-pixels-per-unit the piece wants to render at (default 2). */
   maxResolution?: number;
+  /**
+   * Extra scale when this piece is focused. 1 = fit in the viewport chrome;
+   * >1 zooms in tighter (e.g. 1.28).
+   */
+  focusPad?: number;
   /** Lazy loader. Use `() => import("./<slug>")` so the piece gets its own chunk. */
   load: () => Promise<{ default: MountPiece }>;
 }
