@@ -1,4 +1,4 @@
-import { Reverb, SplendidGrandPiano } from "smplr";
+import { SplendidGrandPiano } from "smplr";
 import type { MountPiece, PieceInstance } from "../types";
 import coverUrl from "./cover.png?url";
 
@@ -114,27 +114,10 @@ const MAX_REPEATS = 8;
 const COVER_PIXEL = 6;
 
 /** MIDI notes in the carol — load only these Steinway samples. */
-const PIANO_NOTES = [41, 43, 48, 50, 55, 57, 59, 60, 62, 64, 65, 67]; // F2 G2 C3 D3 + G3…G4
+/** Key release (s): how long a note takes to fade once it's let go. */
+const RELEASE = 0.3;
 
-/** Soft left hand: root + fifth under the tune (C, F or G — all the carol needs). */
-const LEFT_HAND: Record<"C" | "F" | "G", number[]> = { C: [48, 55], F: [41, 48], G: [43, 50] };
-const CHORD_FOR: Record<number, ("C" | "F" | "G")[]> = {
-  0: ["C", "F"], 2: ["G"], 4: ["C"], 5: ["F"], 7: ["C", "G"], 9: ["F"], 11: ["G"],
-};
-/** Chord under each syllable; `true` where the left hand should strike. */
-const HARMONY: { chord: "C" | "F" | "G"; strike: boolean }[] = (() => {
-  const out: { chord: "C" | "F" | "G"; strike: boolean }[] = [];
-  let prev: "C" | "F" | "G" = "C";
-  SCORE.forEach((row, i) => {
-    const options = CHORD_FOR[row.midi % 12] ?? ["C"];
-    const chord = options.includes(prev) ? prev : options[0];
-    const lineStart = i === 0 || !!SCORE[i - 1].br;
-    const strike = lineStart || row.beats >= 2 || (chord !== prev && row.beats >= 1);
-    out.push({ chord, strike });
-    prev = chord;
-  });
-  return out;
-})();
+const PIANO_NOTES = [55, 57, 59, 60, 62, 64, 65, 67]; // G3 A3 B3 C4 D4 E4 F4 G4
 
 const STYLE_ID = "art-christmas-tree";
 
@@ -335,19 +318,12 @@ class Piano {
       const i = g % SONG;
       const row = SCORE[i];
       const dur = row.beats * BEAT;
-      // Hold each key a little past the next one, like a light sustain pedal.
-      const hold = Math.max(dur * 1.7, 0.45);
-      const at = t + (Math.random() - 0.5) * 0.012; // tiny human timing
+      // Light, articulate touch: let go just before the next note, then a short natural release —
+      // each note is clear, nothing smears into a wash.
+      const hold = Math.max(dur * 0.9, 0.16);
+      const at = t + (Math.random() - 0.5) * 0.006; // tiny human timing
       const stop = inst.start({ note: row.midi, time: at, duration: hold, velocity: this.velocityFor(i, row.beats) });
-      this.voices.push({ g, t, end: at + hold + 1.6, stop });
-      const h = HARMONY[i];
-      if (h.strike) {
-        const lhHold = Math.max(dur * 2.2, 1.1);
-        for (const note of LEFT_HAND[h.chord]) {
-          const lh = inst.start({ note, time: t, duration: lhHold, velocity: 44 + Math.round(Math.random() * 6) });
-          this.voices.push({ g, t, end: t + lhHold + 1.6, stop: lh });
-        }
-      }
+      this.voices.push({ g, t, end: at + hold + RELEASE + 0.2, stop });
       this.played.add(g);
       t += dur;
     }
@@ -364,45 +340,34 @@ class Piano {
     }
     if (!this.instrument) {
       const ac = this.ctx;
-      // Master bus: trim → gentle low-pass (takes the edge off) → soft limiter (no clipping
-      // when notes and reverb tails pile up).
+      // Dry and clean: trim → remove sub-rumble → peak catcher only (doesn't pump in normal play).
       const bus = ac.createGain();
-      bus.gain.value = 0.8;
-      const warm = ac.createBiquadFilter();
-      warm.type = "lowpass";
-      warm.frequency.value = 7500;
-      warm.Q.value = 0.5;
+      bus.gain.value = 1.1;
       const rumble = ac.createBiquadFilter();
       rumble.type = "highpass";
-      rumble.frequency.value = 35;
+      rumble.frequency.value = 30;
+      rumble.Q.value = 0.5;
       const limiter = ac.createDynamicsCompressor();
-      limiter.threshold.value = -14;
-      limiter.knee.value = 10;
-      limiter.ratio.value = 4;
-      limiter.attack.value = 0.004;
-      limiter.release.value = 0.25;
-      bus.connect(warm).connect(rumble).connect(limiter).connect(ac.destination);
+      limiter.threshold.value = -3;
+      limiter.knee.value = 0;
+      limiter.ratio.value = 20;
+      limiter.attack.value = 0.002;
+      limiter.release.value = 0.1;
+      bus.connect(rumble).connect(limiter).connect(ac.destination);
 
-      const reverb = Reverb(ac);
-      reverb.connect(bus);
       // Real Steinway samples — every velocity layer so timbre changes with touch
       this.instrument = SplendidGrandPiano(ac, {
         destination: bus,
-        volume: 92,
+        volume: 100,
         velocity: 80,
-        decayTime: 1.6,
+        decayTime: RELEASE,
         notesToLoad: {
           notes: PIANO_NOTES,
           velocityRange: [1, 127],
           fallback: "nearest",
         },
       });
-      this.instrument.output.addEffect("reverb", reverb, 0.22);
-      this.ready = Promise.all([this.instrument.ready, reverb.ready()]).then(() => {
-        const decay = reverb.getParam("decay");
-        if (decay) decay.value = 0.62;
-        const damping = reverb.getParam("damping");
-        if (damping) damping.value = 0.45;
+      this.ready = this.instrument.ready.then(() => {
         this.loaded = true;
       });
     }
@@ -410,16 +375,17 @@ class Piano {
   }
 
   private velocityFor(i: number, beats: number): number {
-    // Shape each phrase: lean into its first note and long notes, ease off short ones,
-    // with a touch of randomness so repeated notes don't sound machine-gunned.
-    let v = 70;
-    if (beats >= 3) v = 84;
-    else if (beats >= 2) v = 80;
-    else if (beats < 1) v = 62;
-    if (i === 0 || SCORE[i - 1]?.br) v += 8;
-    v += Math.round((Math.random() - 0.5) * 8);
-    return Math.max(52, Math.min(100, v));
+    // Firm, even touch (brighter sample layers = clearer tone); lean into phrase starts and
+    // long notes, a hair of randomness so repeats aren't robotic.
+    let v = 82;
+    if (beats >= 3) v = 92;
+    else if (beats >= 2) v = 88;
+    else if (beats < 1) v = 76;
+    if (i === 0 || SCORE[i - 1]?.br) v += 6;
+    v += Math.round((Math.random() - 0.5) * 6);
+    return Math.max(70, Math.min(104, v));
   }
+
 
 }
 
