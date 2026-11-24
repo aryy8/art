@@ -180,6 +180,9 @@ function ensureStyles() {
   -webkit-user-select: none;
   -webkit-user-drag: none;
 }
+[data-carol] .carol-text .line {
+  white-space: nowrap; /* justified lines must never wrap */
+}
 /* Only selectable once the piece is open, so panning the canvas never highlights lyrics. */
 .piece.is-focused [data-carol] .carol-text {
   touch-action: auto;
@@ -454,10 +457,72 @@ function appendSong(el: HTMLElement, songIndex: number) {
   el.appendChild(block);
 }
 
-function fillLyrics(el: HTMLElement) {
+/** Local (world-unit) width of an element, independent of the canvas zoom. */
+function localWidth(node: Element, scale: number) {
+  return node.getBoundingClientRect().width / scale;
+}
+
+/**
+ * Stretch one line to exactly `target` wide by spreading the spare room over letters
+ * (most) and word gaps (some), so every line shares the same left and right edge.
+ */
+function justifyLine(line: HTMLElement, target: number, scale: number) {
+  line.style.letterSpacing = "";
+  line.style.wordSpacing = "";
+  line.style.marginRight = "";
+  const txt = line.textContent ?? "";
+  const gaps = Math.max(1, txt.length - 1);
+  const spaces = (txt.match(/ /g) ?? []).length;
+  const natural = localWidth(line, scale);
+  const extra = target - natural;
+  if (Math.abs(extra) <= 0.25) return;
+  // Grow mostly through letters, a bit through word gaps; shrink (rare) through letters only.
+  const ws = spaces && extra > 0 ? (extra * 0.45) / spaces : 0;
+  let ls = (extra - ws * spaces) / gaps;
+  const apply = () => {
+    line.style.letterSpacing = `${ls}px`;
+    line.style.wordSpacing = `${ws}px`;
+    // Chrome/Safari add letter-spacing after the last glyph too; pull it back so the
+    // visible ink is what gets centred.
+    line.style.marginRight = `${-ls}px`;
+  };
+  apply();
+  // One correction pass for kerning / rounding.
+  const visible = localWidth(line, scale) - ls;
+  ls += (target - visible) / gaps;
+  apply();
+}
+
+function fillLyrics(el: HTMLElement): number {
   el.replaceChildren();
   el.style.paddingTop = "";
+  el.style.fontSize = "";
   const limit = el.clientHeight;
+  const cs = getComputedStyle(el);
+  const inner = el.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0);
+  const target = Math.floor(inner) - 1; // never quite touch the edge (no accidental wrap)
+  const scale = el.getBoundingClientRect().width / Math.max(1, el.offsetWidth);
+
+  // Size the type so the widest line fills the column; the rest get justified to it.
+  appendSong(el, 0);
+  // Biggest type whose widest line still fits. Glyph widths snap with hinting at some
+  // sizes, so search by measuring instead of assuming width ∝ size.
+  const widestAt = (px: number) => {
+    el.style.fontSize = `${px}px`;
+    let w = 0;
+    for (const line of el.querySelectorAll<HTMLElement>(".line")) w = Math.max(w, localWidth(line, scale));
+    return w;
+  };
+  let lo = 8;
+  let hi = 64;
+  for (let pass = 0; pass < 12; pass++) {
+    const mid = (lo + hi) / 2;
+    if (widestAt(mid) <= target) lo = mid;
+    else hi = mid;
+  }
+  el.style.fontSize = `${Math.floor(lo * 100) / 100}px`;
+  el.replaceChildren();
+
   // Stamp songs until the page is full, so the whole cover can be uncovered.
   for (let v = 0; v < MAX_REPEATS; v++) {
     if (v > 0) el.appendChild(document.createTextNode("\n"));
@@ -479,19 +544,27 @@ function fillLyrics(el: HTMLElement) {
       if (gap?.nodeType === Node.TEXT_NODE) gap.remove();
     }
   }
+  // Every line the same width → straight left and right edges.
+  for (const line of lines()) justifyLine(line, target, scale);
   // Centre the block vertically inside the page.
   const all = lines();
   if (all.length > 0) {
-    const box = el.getBoundingClientRect();
     const top = all[0].getBoundingClientRect().top;
     const bottom = all[all.length - 1].getBoundingClientRect().bottom;
-    const scale = box.height / Math.max(1, el.offsetHeight);
     const used = (bottom - top) / scale;
-    const pad = parseFloat(getComputedStyle(el).paddingTop) || 0;
-    const pb = parseFloat(getComputedStyle(el).paddingBottom) || 0;
+    const pad = parseFloat(cs.paddingTop) || 0;
+    const pb = parseFloat(cs.paddingBottom) || 0;
     const spare = el.clientHeight - pad - pb - used;
     if (spare > 1) el.style.paddingTop = `${pad + spare / 2}px`;
   }
+  return target;
+}
+
+/** Re-even the edges (glyph widths can shift slightly with zoom level). */
+function rejustify(el: HTMLElement, target: number) {
+  const scale = el.getBoundingClientRect().width / Math.max(1, el.offsetWidth);
+  if (!(scale > 0)) return;
+  for (const line of el.querySelectorAll<HTMLElement>(".line")) justifyLine(line, target, scale);
 }
 
 /** Bake a pixelated cover once; blit from this during selection. */
@@ -535,10 +608,12 @@ const mount: MountPiece = async (ctx): Promise<PieceInstance> => {
   ctx.el.appendChild(root);
 
   const img = await loadImage(coverUrl);
+  // The lyrics are measured to justify them, so the real face must be in before layout.
+  await document.fonts.load('20px "Instrument Serif"', "Jingle bells").catch(() => undefined);
   await document.fonts.ready;
   await new Promise<void>((r) => requestAnimationFrame(() => r()));
 
-  fillLyrics(text);
+  const lineWidth = fillLyrics(text);
 
   const g = canvas.getContext("2d");
   const piano = new Piano();
@@ -735,6 +810,7 @@ const mount: MountPiece = async (ctx): Promise<PieceInstance> => {
     frame() {},
     setResolution() {
       baked = null;
+      rejustify(text, lineWidth);
       sizeCanvas();
       const sel = window.getSelection();
       if (sel && !sel.isCollapsed && root.contains(sel.anchorNode) && sel.rangeCount > 0) {
