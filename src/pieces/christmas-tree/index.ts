@@ -108,8 +108,8 @@ const SCORE: Row[] = [
 const SONG = SCORE.length;
 /** Quarter-note ≈ 108 BPM; BEAT is an eighth. */
 const BEAT = 60 / 108 / 2;
-/** How many times to stamp the song into the page (trimmed to fit). */
-const MAX_REPEATS = 3;
+/** Upper bound on songs stamped into the page (trimmed line-by-line to fit). */
+const MAX_REPEATS = 8;
 /** Soft pixel size for the cover reveal. */
 const COVER_PIXEL = 6;
 
@@ -369,16 +369,41 @@ function appendSong(el: HTMLElement) {
 
 function fillLyrics(el: HTMLElement): number {
   el.replaceChildren();
+  el.style.paddingTop = "";
+  const limit = el.clientHeight;
+  // Stamp songs until the page is full, so the whole cover can be uncovered.
   for (let v = 0; v < MAX_REPEATS; v++) {
     if (v > 0) el.appendChild(document.createTextNode("\n"));
     appendSong(el);
+    if (el.scrollHeight > limit + 2) break;
   }
-  const limit = el.clientHeight;
-  while (el.querySelectorAll(".song").length > 1 && el.scrollHeight > limit + 2) {
-    el.lastChild?.remove();
-    if (el.lastChild?.nodeType === Node.TEXT_NODE && el.lastChild.textContent === "\n") {
-      el.lastChild.remove();
+  // Trim whole lines (not whole songs) so the text runs to the bottom margin.
+  const lines = () => el.querySelectorAll<HTMLElement>(".line");
+  while (lines().length > 1 && el.scrollHeight > limit + 2) {
+    const all = lines();
+    const last = all[all.length - 1];
+    const song = last.parentElement!;
+    const prev = last.previousSibling;
+    last.remove();
+    if (prev?.nodeType === Node.TEXT_NODE) prev.remove();
+    if (!song.querySelector(".line")) {
+      const gap = song.previousSibling;
+      song.remove();
+      if (gap?.nodeType === Node.TEXT_NODE) gap.remove();
     }
+  }
+  // Centre the block vertically inside the page.
+  const all = lines();
+  if (all.length > 0) {
+    const box = el.getBoundingClientRect();
+    const top = all[0].getBoundingClientRect().top;
+    const bottom = all[all.length - 1].getBoundingClientRect().bottom;
+    const scale = box.height / Math.max(1, el.offsetHeight);
+    const used = (bottom - top) / scale;
+    const pad = parseFloat(getComputedStyle(el).paddingTop) || 0;
+    const pb = parseFloat(getComputedStyle(el).paddingBottom) || 0;
+    const spare = el.clientHeight - pad - pb - used;
+    if (spare > 1) el.style.paddingTop = `${pad + spare / 2}px`;
   }
   const first = el.querySelector(".song");
   return first?.textContent?.length ?? 1;
