@@ -123,8 +123,8 @@ const mount: MountPiece = async (ctx): Promise<PieceInstance> => {
     }
   }
 
-  // Select some cursors to keep drifting after painting (much fewer)
-  const numDrifters = Math.min(8, Math.floor(totalPixels * 0.005));
+  // Select some cursors to keep drifting after painting (just a few for subtle life)
+  const numDrifters = Math.min(5, Math.floor(totalPixels * 0.003));
   const drifterIndices = new Set<number>();
   while (drifterIndices.size < numDrifters) {
     drifterIndices.add(Math.floor(Math.random() * cursors.length));
