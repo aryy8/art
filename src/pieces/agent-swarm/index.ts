@@ -24,9 +24,9 @@ interface Cursor {
   startTime: number;
 }
 
-const PIXEL_SIZE = 8;
-const PORTRAIT_WIDTH = 60;
-const PORTRAIT_HEIGHT = 60;
+const PIXEL_SIZE = 10;
+const PORTRAIT_WIDTH = 40;
+const PORTRAIT_HEIGHT = 40;
 const CURSOR_NAMES = [
   "Ana", "Ben", "Chi", "Dev", "Eve", "Fin", "Gia", "Han",
   "Ivy", "Jay", "Kim", "Leo", "Mia", "Nik", "Ora", "Paz",
@@ -117,7 +117,7 @@ const mount: MountPiece = async (ctx): Promise<PieceInstance> => {
         drifting: false,
         pixelX: x,
         pixelY: y,
-        delay: Math.random() * 0.5,
+        delay: Math.random() * 1.5,
         startTime: 0,
       });
     }
@@ -139,24 +139,25 @@ const mount: MountPiece = async (ctx): Promise<PieceInstance> => {
   let ppu = 1;
   let startTime = performance.now() / 1000;
 
-  function drawCursor(x: number, y: number, name: string, tagColor: string) {
+  function drawCursor(x: number, y: number, name: string, tagColor: string, scale = 1) {
     g.save();
     g.translate(x, y);
+    g.scale(scale, scale);
 
     // Draw arrow cursor (simple black arrow with white outline)
     g.strokeStyle = "white";
-    g.lineWidth = 3;
+    g.lineWidth = 2.5;
     g.lineCap = "round";
     g.lineJoin = "round";
 
     g.beginPath();
     g.moveTo(0, 0);
-    g.lineTo(0, 12);
-    g.lineTo(3, 9);
-    g.lineTo(5, 14);
-    g.lineTo(7, 13);
-    g.lineTo(5, 8);
-    g.lineTo(9, 8);
+    g.lineTo(0, 10);
+    g.lineTo(2.5, 7.5);
+    g.lineTo(4, 11);
+    g.lineTo(5.5, 10);
+    g.lineTo(4, 6.5);
+    g.lineTo(7.5, 6.5);
     g.closePath();
     g.stroke();
 
@@ -164,20 +165,20 @@ const mount: MountPiece = async (ctx): Promise<PieceInstance> => {
     g.fill();
 
     // Draw name tag
-    g.font = "10px Inter, sans-serif";
+    g.font = "9px Inter, sans-serif";
     g.textAlign = "left";
     g.textBaseline = "top";
     const textWidth = g.measureText(name).width;
 
-    const tagX = 12;
-    const tagY = 2;
-    const tagPadding = 3;
+    const tagX = 10;
+    const tagY = 1;
+    const tagPadding = 2.5;
 
     g.fillStyle = tagColor;
-    g.fillRect(tagX, tagY, textWidth + tagPadding * 2, 16);
+    g.fillRect(tagX, tagY, textWidth + tagPadding * 2, 14);
 
     g.fillStyle = "white";
-    g.fillText(name, tagX + tagPadding, tagY + 3);
+    g.fillText(name, tagX + tagPadding, tagY + 2.5);
 
     g.restore();
   }
@@ -228,7 +229,7 @@ const mount: MountPiece = async (ctx): Promise<PieceInstance> => {
           const dy = cursor.targetY - cursor.y;
           const dist = Math.sqrt(dx * dx + dy * dy);
 
-          if (dist < 2) {
+          if (dist < 3) {
             // Place the pixel
             cursor.placed = true;
             const key = `${cursor.pixelX},${cursor.pixelY}`;
@@ -240,12 +241,17 @@ const mount: MountPiece = async (ctx): Promise<PieceInstance> => {
             }
           } else {
             // Move towards target
-            const speed = cursor.speed * 6;
+            const speed = cursor.speed * 8;
             cursor.x += (dx / dist) * speed;
             cursor.y += (dy / dist) * speed;
             
-            // Only show cursors that are in the viewport or close to it
-            if (cursor.x > -100 && cursor.x < W + 100 && cursor.y > -100 && cursor.y < H + 100) {
+            // Only show cursors that are actively approaching and in a reasonable distance
+            const distToTarget = Math.sqrt(
+              Math.pow(cursor.targetX - cursor.x, 2) + 
+              Math.pow(cursor.targetY - cursor.y, 2)
+            );
+            
+            if (distToTarget < Math.max(W, H) * 0.8) {
               activeCursors.push(cursor);
             }
           }
