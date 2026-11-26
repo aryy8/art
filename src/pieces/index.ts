@@ -72,6 +72,18 @@ export const pieces: PieceDefinition[] = [
     focusPad: 1.2,
     load: () => import("./christmas-tree"),
   },
+  {
+    slug: "agent-swarm",
+    title: "Agent Swarm",
+    date: "Nov 2026",
+    // Grid cell (-1, +1): below and left of sunset
+    x: -1830,
+    y: 1150,
+    width: 660,
+    height: 660,
+    maxResolution: 2,
+    load: () => import("./agent-swarm"),
+  },
   // {
   //   slug: "snoopy",
   //   title: "Sleeping Snoopy",
