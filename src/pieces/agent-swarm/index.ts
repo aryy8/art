@@ -123,8 +123,8 @@ const mount: MountPiece = async (ctx): Promise<PieceInstance> => {
     }
   }
 
-  // Select some cursors to keep drifting after painting
-  const numDrifters = Math.min(20, Math.floor(totalPixels * 0.03));
+  // Select some cursors to keep drifting after painting (much fewer)
+  const numDrifters = Math.min(8, Math.floor(totalPixels * 0.005));
   const drifterIndices = new Set<number>();
   while (drifterIndices.size < numDrifters) {
     drifterIndices.add(Math.floor(Math.random() * cursors.length));
@@ -209,6 +209,8 @@ const mount: MountPiece = async (ctx): Promise<PieceInstance> => {
 
       // Update and draw cursors
       const activeCursors: Cursor[] = [];
+      const drifterCursors: Cursor[] = [];
+      
       for (let i = 0; i < cursors.length; i++) {
         const cursor = cursors[i];
 
@@ -238,37 +240,45 @@ const mount: MountPiece = async (ctx): Promise<PieceInstance> => {
             }
           } else {
             // Move towards target
-            const speed = cursor.speed * 5;
+            const speed = cursor.speed * 6;
             cursor.x += (dx / dist) * speed;
             cursor.y += (dy / dist) * speed;
+            
+            // Only show cursors that are in the viewport or close to it
+            if (cursor.x > -100 && cursor.x < W + 100 && cursor.y > -100 && cursor.y < H + 100) {
+              activeCursors.push(cursor);
+            }
           }
-
-          activeCursors.push(cursor);
         } else if (cursor.drifting) {
-          // Drifting behavior: wander around near the portrait
-          const driftSpeed = 0.5;
-          const wanderRadius = Math.min(W, H) * 0.3;
+          // Drifting behavior: wander around the portrait
+          const wanderRadius = Math.min(W, H) * 0.25;
           const centerX = W / 2;
           const centerY = H / 2;
 
           // Gentle circular drift with noise
-          const angle = cursorAge * 0.5 + i * 0.3;
-          const radius = wanderRadius * (0.5 + Math.sin(cursorAge * 0.3 + i) * 0.3);
+          const angle = cursorAge * 0.3 + i * 0.5;
+          const radius = wanderRadius * (0.6 + Math.sin(cursorAge * 0.4 + i) * 0.25);
           const targetX = centerX + Math.cos(angle) * radius;
           const targetY = centerY + Math.sin(angle) * radius;
 
           const dx = targetX - cursor.x;
           const dy = targetY - cursor.y;
-          cursor.x += dx * 0.02;
-          cursor.y += dy * 0.02;
+          cursor.x += dx * 0.015;
+          cursor.y += dy * 0.015;
 
-          activeCursors.push(cursor);
+          drifterCursors.push(cursor);
         }
       }
 
-      // Draw all active cursors
+      // Draw all active cursors (flying in)
       for (const cursor of activeCursors) {
         // Use a consistent tag color per cursor based on its index
+        const tagColor = TAG_COLORS[cursors.indexOf(cursor) % TAG_COLORS.length];
+        drawCursor(cursor.x, cursor.y, cursor.name, tagColor);
+      }
+      
+      // Draw drifting cursors (after painting)
+      for (const cursor of drifterCursors) {
         const tagColor = TAG_COLORS[cursors.indexOf(cursor) % TAG_COLORS.length];
         drawCursor(cursor.x, cursor.y, cursor.name, tagColor);
       }
